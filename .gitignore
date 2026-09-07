@@ -14,6 +14,8 @@ coverage.txt
 *.coverage
 
 # Terraform state & local files (CRITICAL: NEVER COMMIT TFSTATE)
+.terraform/
+.terraform.lock.hcl
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
@@ -21,6 +23,7 @@ terraform/terraform.tfvars
 terraform/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
+*.tfvars
 
 # Environment variables & secrets
 .env

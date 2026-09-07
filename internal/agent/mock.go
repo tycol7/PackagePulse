@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	trackingRegex = regexp.MustCompile(`(?i)(1Z[0-9A-Z]{16}|\b\d{12,22}\b)`)
-	fedexRegex    = regexp.MustCompile(`(?i)\b\d{12}\b`)
+	trackingRegex     = regexp.MustCompile(`(?i)(1Z[0-9A-Z]{16}|\b\d{12,22}\b)`)
+	fedexRegex        = regexp.MustCompile(`(?i)\b\d{12}\b`)
+	deliveryDateRegex = regexp.MustCompile(`(?i)(?:estimated\s+delivery|delivery\s+date|scheduled\s+delivery):\s*(\d{4}-\d{2}-\d{2})`)
 )
 
 // MockAgent provides a local, offline implementation of LogisticsAgent.
@@ -33,25 +34,29 @@ func (m *MockAgent) ProcessEmail(ctx context.Context, email storage.ParsedEmail)
 	// Rejection heuristics
 	if strings.Contains(combined, "newsletter") ||
 		strings.Contains(combined, "weekly digest") ||
-		strings.Contains(combined, "unsubscribe") && !strings.Contains(combined, "tracking") && !strings.Contains(combined, "shipped") {
+		(strings.Contains(combined, "unsubscribe") && !strings.Contains(combined, "tracking") && !strings.Contains(combined, "shipped")) ||
+		((strings.Contains(combined, "receipt") || strings.Contains(combined, "invoice") || strings.Contains(combined, "payment") || strings.Contains(combined, "subscription")) &&
+			!strings.Contains(combined, "tracking") && !strings.Contains(combined, "shipped") && !strings.Contains(combined, "carrier")) {
 		return &models.ExtractionResult{
 			IsPackageEmail:  false,
 			Confidence:      0.95,
-			Reasoning:       "Classified as promotional newsletter / marketing broadcast. Detected marketing keywords and unsubscribe links with no shipping carrier or tracking identifiers.",
-			RejectionReason: "Classified as promotional newsletter / marketing broadcast",
+			Reasoning:       "Classified as non-package communication (promotional newsletter or service billing invoice without shipping details).",
+			RejectionReason: "Classified as non-package communication",
 		}, nil
 	}
 
 	// Acceptance heuristics
 	sender := "Google Store"
-	if strings.Contains(combined, "fedex") {
-		sender = "FedEx Shipper"
+	if strings.Contains(combined, "google store") || strings.Contains(combined, "google") {
+		sender = "Google Store"
 	} else if strings.Contains(combined, "amazon") {
 		sender = "Amazon.com"
 	} else if strings.Contains(combined, "b&h") || strings.Contains(combined, "bhphoto") {
 		sender = "B&H Photo Video"
 	} else if strings.Contains(combined, "apple") {
 		sender = "Apple Store"
+	} else if strings.Contains(combined, "fedex") {
+		sender = "FedEx Shipper"
 	}
 
 	carrier := "FedEx"
@@ -132,6 +137,11 @@ func (m *MockAgent) ProcessEmail(ctx context.Context, email storage.ParsedEmail)
 		}
 
 		expectedDate := storage.DeduceDeliveryDate(combined, email.SentAt)
+		if expectedDate == "" {
+			if m := deliveryDateRegex.FindStringSubmatch(email.Body); len(m) > 1 {
+				expectedDate = m[1]
+			}
+		}
 
 		extractedPkgs = append(extractedPkgs, &models.ExtractedFields{
 			Sender:               sender,

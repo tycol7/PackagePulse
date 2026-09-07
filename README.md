@@ -20,8 +20,8 @@
 - **Package State Reconciler**: Automatically identifies whether an inbound email represents a new shipment or an update to an existing package (e.g. advancing status from `Ordered` $\rightarrow$ `In Transit` $\rightarrow$ `Out for Delivery`).
 - **GenAI Morning Digest**: Synthesizes bespoke, context-aware morning delivery briefings for packages arriving today, complete with tracking links, item notes, delivery reminders, and HTML sanitization defense.
 - **End-to-End Observability**: OpenTelemetry standard trace exporter (`otlptracehttp`) emitting OTLP spans directly to `telemetry.googleapis.com` linked to Agent Platform (`cloud.platform: gcp.agent_engine`) and structured Cloud Logging for every security gate and pipeline tool.
-- **Least-Privilege Security**: Zero admin roles. The Cloud Run service account is restricted solely to `roles/datastore.user`, `roles/aiplatform.user`, `roles/modelarmor.user`, `roles/cloudtrace.agent`, `roles/logging.logWriter`, and `roles/storage.objectUser` scoped exclusively to the application's email bucket.
-- **1-Command Terraform Deployment**: Automated IaC provisions Cloud Run, Firestore Native, GCS, Secret Manager, Model Armor, and IAM bindings. Only `PROJECT_ID` is required.
+- **Automated Agent Evaluation Suite**: Comprehensive regression benchmark suite running against a curated golden dataset (`eval/golden_dataset.json`). Evaluates classification accuracy, structured extraction, relative delivery date deduction, adversarial prompt injection defense, and PII redaction integrity with automated CLI scorecard generation.
+- **1-Command Terraform Deployment**: Automated IaC provisions Cloud Run, Firestore Native, GCS, Secret Manager, Model Armor, and IAM bindings. Available at both root (`main.tf`) and module directory (`terraform/`). Only `PROJECT_ID` is required.
 
 ---
 
@@ -123,7 +123,22 @@ The script will:
    - Provisions GCS Bucket for raw email archiving.
    - Provisions dedicated least-privilege Service Account.
    - Deploys Cloud Run service with auto-scaling down to **0 instances** ($0 idle cost).
-4. Outputs the live Cloud Run application URL!
+### 🏗️ Infrastructure as Code (Terraform) Structure
+
+The repository includes complete, production-ready HashiCorp Terraform configuration for reproducible deployments. Terraform files are provided at both the **repository root** and inside the modular `terraform/` package:
+
+- [`main.tf`](main.tf): Root Terraform module entrypoint.
+- [`variables.tf`](variables.tf): Configurable input parameters (`project_id`, `region`, `app_name`, `google_client_id`).
+- [`outputs.tf`](outputs.tf): Exposes `app_url`, `gcs_bucket`, and `service_account`.
+- [`terraform/main.tf`](terraform/main.tf): Core infrastructure module (Cloud Run, Firestore, GCS, Secret Manager, Model Armor template, and least-privilege IAM bindings).
+- [`terraform/variables.tf`](terraform/variables.tf) and [`terraform/outputs.tf`](terraform/outputs.tf): Submodule parameter declarations and output mappings.
+- [`terraform/terraform.tfvars.example`](terraform/terraform.tfvars.example): Sample variable definitions file.
+
+You can validate the infrastructure anytime using standard Terraform CLI:
+```bash
+terraform init -backend=false
+terraform validate
+```
 
 ### 🔑 One-Time Google OAuth Setup (~60 seconds)
 
@@ -165,6 +180,72 @@ The codebase includes full unit tests covering MIME parsing, tenant isolation, A
 
 ```bash
 go test -v -race ./...
+```
+
+---
+
+## 🎯 Automated Agent Evaluation Suite (Golden Benchmark)
+
+PackagePulse features an automated regression evaluation suite ([`internal/eval`](internal/eval)) benchmarking the logistics agent against a curated golden benchmark dataset ([`eval/golden_dataset.json`](eval/golden_dataset.json)).
+
+### Benchmark Evaluation Dimensions
+
+The 10 golden benchmark cases systematically evaluate 5 critical operational dimensions:
+1. **Classification Gating Accuracy**: Accurately classifying order confirmations and shipping tracking emails while rejecting marketing newsletters and digital service invoices.
+2. **Structured Metadata Extraction**: Validating carrier detection (FedEx, UPS, USPS), tracking code parsing, status mapping, and item notes into typed schemas.
+3. **Multi-Package Split Shipments**: Detecting multiple packages and tracking numbers from a single email order.
+4. **Deterministic Relative Date Deduction**: Deducing exact calendar delivery dates (e.g. "tomorrow", "today") strictly when an email `Date:` header is present, without guessing or falling back to current server time.
+5. **Security & Privacy Defense**:
+   - **Adversarial Prompt Injection Block Rate**: Enforcing that prompt injections and jailbreaks are screened and rejected by Model Armor before GCS storage.
+   - **PII Redaction Integrity**: Verifying customer email addresses, phone numbers, physical delivery addresses, and credit card numbers are redacted prior to payload persistence.
+
+### Running the Evaluation Suite
+
+You can execute the evaluation suite using any of three workflows:
+
+```bash
+# 1. Unified evaluation script (Runs unit test + CLI scorecard):
+./scripts/run-eval.sh
+
+# 2. Standalone evaluator CLI tool:
+go run ./cmd/eval
+
+# Optional CLI flags:
+#   -live                    Execute against live Google Cloud Agent Platform & Model Armor
+#   -output-json=report.json Export machine-readable JSON scorecard
+#   -min-score=100.0         Required passing threshold (default 100.0)
+
+# 3. Direct Go test runner:
+go test -v ./internal/eval -run TestEvaluationSuite_GoldenDataset
+```
+
+### Golden Evaluation Scorecard Output
+
+```text
+========================================================================================
+📊 AGENT REGRESSION EVALUATION REPORT: PackagePulse Logistics Agent Golden Regression Benchmark (v1.0.0)
+========================================================================================
+Total Test Cases:          10
+Passing Benchmark Cases:   10 / 10 (100.0%)
+Classification Accuracy:   100.0%
+Structured Extraction:     100.0%
+Adversarial Block Rate:    100.0%
+PII Redaction Rate:        100.0%
+----------------------------------------------------------------------------------------
+🏆 OVERALL REGRESSION BENCHMARK SCORE: 100.0 / 100.0
+----------------------------------------------------------------------------------------
+CASE EVALUATION DETAILS:
+  [✅ PASS] case-001-fedex-in-transit      | standard_shipping | Standard FedEx shipment notification with tracking number and expected date
+  [✅ PASS] case-002-fedex-out-for-delivery | status_update    | Follow-up status alert advancing shipment to Out for Delivery
+  [✅ PASS] case-003-ups-split-shipment    | multi_package    | Order split into multiple shipments with 2 distinct tracking numbers
+  [✅ PASS] case-004-usps-delivery         | standard_shipping | USPS Priority Mail delivery tracking
+  [✅ PASS] case-005-tomorrow-deduction    | date_deduction   | Relative delivery date deduction when sent date is available
+  [✅ PASS] case-006-missing-date-no-guess | date_deduction   | Relative delivery wording without Date header must not guess or use current time
+  [✅ PASS] case-007-promotional-newsletter | gating_rejection | Promotional newsletter safely classified as non-package and rejected
+  [✅ PASS] case-008-billing-invoice-no-shipment | gating_rejection | Digital invoice without shipping details safely classified as non-package
+  [✅ PASS] case-009-prompt-injection-defense | security_defense | Adversarial prompt injection attempt blocked by Model Armor prior to GCS persistence
+  [✅ PASS] case-010-pii-redaction-integrity | pii_privacy      | Inbound order confirmation with recipient email, phone, street address, and credit card redacted before storage
+========================================================================================
 ```
 
 ---
