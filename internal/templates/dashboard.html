@@ -1,0 +1,95 @@
+{{template "layout.html" .}}
+
+{{define "title"}}Dashboard | PackagePulse{{end}}
+
+{{define "content"}}
+<!-- Top App Bar -->
+<header class="top-app-bar">
+  <div class="brand-section">
+    <span class="material-symbols-outlined brand-icon">local_shipping</span>
+    <h1 class="brand-title">PackagePulse</h1>
+  </div>
+
+  <div class="user-section">
+
+    <!-- On-Demand GenAI Digest Button -->
+    <button class="btn-primary" hx-get="/api/digest/modal" hx-target="#modal-container">
+      <span class="material-symbols-outlined" style="font-size: 18px;">auto_awesome</span>
+      <span>Generate Daily Digest</span>
+    </button>
+
+    <!-- User Profile & Logout -->
+    <div class="user-profile">
+      {{if .User.AvatarURL}}
+        <img src="{{.User.AvatarURL}}" alt="{{.User.DisplayName}}" class="user-avatar">
+      {{else}}
+        <div class="user-avatar" style="background:#1a73e8; color:#fff; display:flex; align-items:center; justify-content:center; font-weight:600;">
+          G
+        </div>
+      {{end}}
+      <span style="font-size: 14px; font-weight: 500; color: #202124;">{{.User.DisplayName}}</span>
+      <a href="/logout" style="color: #5f6368; text-decoration: none; display: flex; align-items: center; margin-left: 8px;" title="Sign out">
+        <span class="material-symbols-outlined" style="font-size: 20px;">logout</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- Main Container -->
+<main class="main-container">
+  
+  <!-- Inbound Email Upload Zone -->
+  {{template "upload_zone" .}}
+
+  <!-- Controls & Filters -->
+  <div class="controls-bar">
+    <div class="filter-group">
+      <button class="chip-btn {{if eq .ActiveFilter "All"}}active{{end}}" 
+              hx-get="/packages?status=All" hx-target="#package-list-container"
+              onclick="document.querySelectorAll('.chip-btn').forEach(b => b.classList.remove('active')); this.classList.add('active');">
+        All <span class="chip-count" id="count-all">{{.TotalCount}}</span>
+      </button>
+      <button class="chip-btn {{if eq .ActiveFilter "In Transit"}}active{{end}}" 
+              hx-get="/packages?status=In%20Transit" hx-target="#package-list-container"
+              onclick="document.querySelectorAll('.chip-btn').forEach(b => b.classList.remove('active')); this.classList.add('active');">
+        In Transit <span class="chip-count" id="count-in-transit">{{.CountInTransit}}</span>
+      </button>
+      <button class="chip-btn {{if eq .ActiveFilter "Out for Delivery"}}active{{end}}" 
+              hx-get="/packages?status=Out%20for%20Delivery" hx-target="#package-list-container"
+              onclick="document.querySelectorAll('.chip-btn').forEach(b => b.classList.remove('active')); this.classList.add('active');">
+        Out for Delivery <span class="chip-count" id="count-out-for-delivery">{{.CountOutForDelivery}}</span>
+      </button>
+      <button class="chip-btn {{if eq .ActiveFilter "Ordered"}}active{{end}}" 
+              hx-get="/packages?status=Ordered" hx-target="#package-list-container"
+              onclick="document.querySelectorAll('.chip-btn').forEach(b => b.classList.remove('active')); this.classList.add('active');">
+        Ordered <span class="chip-count" id="count-ordered">{{.CountOrdered}}</span>
+      </button>
+      <button class="chip-btn {{if eq .ActiveFilter "Delivered"}}active{{end}}" 
+              hx-get="/packages?status=Delivered" hx-target="#package-list-container"
+              onclick="document.querySelectorAll('.chip-btn').forEach(b => b.classList.remove('active')); this.classList.add('active');">
+        Delivered <span class="chip-count" id="count-delivered">{{.CountDelivered}}</span>
+      </button>
+    </div>
+
+    <!-- Manual Add Button -->
+    <button class="btn-secondary" hx-get="/packages/new" hx-target="#modal-container">
+      <span class="material-symbols-outlined" style="font-size: 18px;">add</span>
+      <span>Add Package</span>
+    </button>
+  </div>
+
+  <!-- Package List Container -->
+  <div id="package-list-container">
+    {{template "package_list" .}}
+  </div>
+
+</main>
+{{end}}
+
+{{define "status_pill_counts"}}
+<span class="chip-count" id="count-all" hx-swap-oob="true">{{.TotalCount}}</span>
+<span class="chip-count" id="count-in-transit" hx-swap-oob="true">{{.CountInTransit}}</span>
+<span class="chip-count" id="count-out-for-delivery" hx-swap-oob="true">{{.CountOutForDelivery}}</span>
+<span class="chip-count" id="count-ordered" hx-swap-oob="true">{{.CountOrdered}}</span>
+<span class="chip-count" id="count-delivered" hx-swap-oob="true">{{.CountDelivered}}</span>
+{{end}}

@@ -1,0 +1,20 @@
+From: trackingupdates@fedex.com
+Subject: FedEx Alert: Your package is OUT FOR DELIVERY today!
+Date: Sun, 06 Sep 2026 11:30:00 -0700
+
+Hi Googler,
+
+Your delivery driver has loaded your shipment onto the vehicle and it is now OUT FOR DELIVERY!
+
+Carrier: FedEx
+Merchant: Google Store
+Tracking Number: 773918274619
+Estimated Delivery Window: Today before 4:30 PM
+Expected Delivery Date: 2026-09-06
+Status: Out for Delivery
+
+Items: Google Pixel 9 Pro 256GB Obsidian & Pixel Stand
+
+Direct Tracking Link: https://www.fedex.com/fedextrack/?trknbr=773918274619
+
+Please ensure someone is available or leave delivery instructions if necessary.

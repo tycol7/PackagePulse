@@ -1,0 +1,48 @@
+From: "FedEx Tracking Updates" <trackingupdates@fedex.com>
+To: "Googler Logistics" <track+usr_demo123@packagepulse.google.com>
+Subject: Your FedEx package is on its way! Tracking #773918274619
+Date: Sun, 06 Sep 2026 09:15:00 -0700
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="--boundary_fedex_123"
+
+----boundary_fedex_123
+Content-Type: text/plain; charset="utf-8"
+
+FedEx Shipment Notification
+
+Hi Googler,
+
+Your order from Google Store is on its way via FedEx Home Delivery.
+
+Tracking Number: 773918274619
+Expected Delivery Date: 2026-09-06
+Status: In Transit
+Carrier: FedEx
+
+Contents:
+- 1x Google Pixel 9 Pro (256GB, Obsidian)
+- 1x Pixel Stand (2nd Gen)
+
+Track your package online:
+https://www.fedex.com/fedextrack/?trknbr=773918274619
+
+Thank you for choosing FedEx!
+----boundary_fedex_123
+Content-Type: text/html; charset="utf-8"
+
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Your FedEx Shipment is In Transit</h2>
+  <p>Hello Googler,</p>
+  <p>Great news! Your package from <strong>Google Store</strong> has departed our regional sort facility and is now <strong>In Transit</strong>.</p>
+  <ul>
+    <li><strong>Carrier:</strong> FedEx</li>
+    <li><strong>Tracking Number:</strong> 773918274619</li>
+    <li><strong>Expected Delivery Date:</strong> 2026-09-06</li>
+    <li><strong>Package Contents:</strong> Google Pixel 9 Pro (256GB, Obsidian)</li>
+  </ul>
+  <p><a href="https://www.fedex.com/fedextrack/?trknbr=773918274619">Click here to track your package</a></p>
+</body>
+</html>
+----boundary_fedex_123--

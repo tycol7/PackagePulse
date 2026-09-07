@@ -1,0 +1,78 @@
+{{define "package_form_modal"}}
+<div class="modal-overlay" onclick="if (event.target === this) closeModal();">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2>{{if .ID}}Edit Package{{else}}Track New Package{{end}}</h2>
+      <button onclick="closeModal();" style="background:none; border:none; cursor:pointer; color:#5f6368;">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+
+    <form {{if .ID}}hx-put="/packages/{{.ID}}" hx-target="#pkg-card-{{.ID}}" hx-swap="outerHTML"{{else}}hx-post="/packages" hx-target="#package-list-container"{{end}}
+          hx-on::after-request="if(event.detail.successful) closeModal();">
+      
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- Sender -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Sender / Merchant *</label>
+          <input type="text" name="sender" value="{{.Sender}}" required placeholder="e.g. Google Store, Amazon, Apple"
+                 style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px;">
+        </div>
+
+        <!-- Carrier & Status row -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Carrier</label>
+            <input type="text" name="carrier" value="{{.Carrier}}" placeholder="e.g. FedEx, UPS, USPS"
+                   style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px;">
+          </div>
+          <div>
+            <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Status</label>
+            <select name="status" style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px; background: #fff;">
+              <option value="Ordered" {{if eq .Status "Ordered"}}selected{{end}}>Ordered</option>
+              <option value="In Transit" {{if or (eq .Status "In Transit") (not .Status)}}selected{{end}}>In Transit</option>
+              <option value="Out for Delivery" {{if eq .Status "Out for Delivery"}}selected{{end}}>Out for Delivery</option>
+              <option value="Delivered" {{if eq .Status "Delivered"}}selected{{end}}>Delivered</option>
+              <option value="Exception" {{if eq .Status "Exception"}}selected{{end}}>Exception</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Tracking Number & Link -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Tracking Number</label>
+          <input type="text" name="tracking_number" value="{{.TrackingNumber}}" placeholder="e.g. 771234567890"
+                 style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px;">
+        </div>
+
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Tracking Link (URL)</label>
+          <input type="url" name="tracking_link" value="{{.TrackingLink}}" placeholder="https://..."
+                 style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px;">
+        </div>
+
+        <!-- Expected Delivery Date -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Expected Delivery Date (YYYY-MM-DD)</label>
+          <input type="date" name="expected_delivery_date" value="{{.ExpectedDeliveryDate}}"
+                 style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px;">
+        </div>
+
+        <!-- Notes -->
+        <div>
+          <label style="display: block; font-size: 13px; font-weight: 500; color: #3c4043; margin-bottom: 4px;">Notes / Item Contents</label>
+          <textarea name="notes" rows="3" placeholder="e.g. Pixel 9 Pro Fold & Screen Protector"
+                    style="width: 100%; padding: 8px 12px; border: 1px solid #dadce0; border-radius: 8px; font-size: 14px; resize: vertical;">{{.Notes}}</textarea>
+        </div>
+
+        <!-- Buttons -->
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+          <button type="button" class="btn-secondary" onclick="closeModal();">Cancel</button>
+          <button type="submit" class="btn-primary">{{if .ID}}Save Changes{{else}}Track Package{{end}}</button>
+        </div>
+      </div>
+
+    </form>
+  </div>
+</div>
+{{end}}

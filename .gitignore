@@ -1,0 +1,44 @@
+# Binaries & build artifacts
+/server
+cmd/server/server
+*.exe
+*.test
+*.out
+*.so
+*.dylib
+
+# Go workspace & coverage
+go.work
+go.work.sum
+coverage.txt
+*.coverage
+
+# Terraform state & local files (CRITICAL: NEVER COMMIT TFSTATE)
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+
+# Environment variables & secrets
+.env
+.env.*
+*.env
+*.key
+*.pem
+credentials.json
+client_secrets.json
+
+# IDE / OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary / Scratch artifacts
+scratch/
+test_*.go
+*.log

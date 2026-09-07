@@ -1,0 +1,69 @@
+{{define "upload_zone"}}
+<div class="upload-card" id="drop-zone" onclick="document.getElementById('email_file_input').click()">
+  <form id="email-upload-form"
+        hx-post="/api/emails/upload"
+        hx-encoding="multipart/form-data"
+        hx-target="#package-list-container"
+        hx-indicator="#upload-indicator">
+    
+    <span class="material-symbols-outlined upload-icon">cloud_upload</span>
+    <h3>Inbound Email Agent Ingestion</h3>
+    <p>Drop a raw <strong>.eml</strong> or <strong>.txt</strong> shipping email here, or click to browse.</p>
+    <p style="font-size: 12px; color: #80868b; margin-top: 4px;">Raw bytes are archived to Google Cloud Storage &bull; Analyzed via Agent Platform (Gemini 2.5 Flash)</p>
+
+    <input type="file" id="email_file_input" name="email_file" accept=".eml,.txt,message/rfc822" style="display: none;"
+           onchange="htmx.trigger('#email-upload-form', 'submit');">
+  </form>
+
+  <!-- Upload & Agent Processing Indicator -->
+  <div id="upload-indicator" class="htmx-indicator" style="margin-top: 16px;">
+    <div style="display: inline-flex; align-items: center; gap: 10px; background: #e8f0fe; color: #1a73e8; padding: 8px 16px; border-radius: 20px; font-size: 14px; font-weight: 500;">
+      <span class="material-symbols-outlined" style="animation: spin 1s linear infinite;">sync</span>
+      <span>Gemini 2.5 Flash is classifying intent and extracting shipment data...</span>
+    </div>
+  </div>
+</div>
+
+<style>
+  @keyframes spin {
+    100% { transform: rotate(360deg); }
+  }
+  .dragover {
+    background: #eef3fc !important;
+    border-color: #174ea6 !important;
+  }
+</style>
+
+<script>
+  (function() {
+    const dz = document.getElementById('drop-zone');
+    if (!dz) return;
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dz.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dz.classList.add('dragover');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dz.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dz.classList.remove('dragover');
+      }, false);
+    });
+
+    dz.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      const files = dt.files;
+      if (files.length > 0) {
+        const input = document.getElementById('email_file_input');
+        input.files = files;
+        htmx.trigger('#email-upload-form', 'submit');
+      }
+    }, false);
+  })();
+</script>
+{{end}}

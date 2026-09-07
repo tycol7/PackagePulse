@@ -1,0 +1,46 @@
+From: "Google Store Orders" <shipping-noreply@google.com>
+To: "Googler Logistics" <track+usr_demo123@packagepulse.google.com>
+Subject: Your package with tracking #773918274619 will be delivered tomorrow!
+Date: Sun, 06 Sep 2026 08:30:00 -0700
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="--boundary_tomorrow_123"
+
+----boundary_tomorrow_123
+Content-Type: text/plain; charset="utf-8"
+
+Google Store Delivery Notification
+
+Hi Googler,
+
+Great news! Your package is scheduled for delivery tomorrow.
+
+Carrier: FedEx
+Tracking Number: 773918274619
+Expected Delivery: Tomorrow
+Status: Out for Delivery
+
+Contents:
+- 1x Google Pixel 9 Pro (256GB, Obsidian)
+
+Track your delivery status online:
+https://www.fedex.com/fedextrack/?trknbr=773918274619
+----boundary_tomorrow_123
+Content-Type: text/html; charset="utf-8"
+
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Your package will be delivered tomorrow!</h2>
+  <p>Hello Googler,</p>
+  <p>Your package from <strong>Google Store</strong> is on its way and will be delivered tomorrow.</p>
+  <ul>
+    <li><strong>Carrier:</strong> FedEx</li>
+    <li><strong>Tracking Number:</strong> 773918274619</li>
+    <li><strong>Scheduled Delivery:</strong> Tomorrow</li>
+    <li><strong>Status:</strong> Out for Delivery</li>
+    <li><strong>Items:</strong> Google Pixel 9 Pro</li>
+  </ul>
+  <p><a href="https://www.fedex.com/fedextrack/?trknbr=773918274619">Track package</a></p>
+</body>
+</html>
+----boundary_tomorrow_123--

@@ -1,0 +1,16 @@
+.gcloudignore
+.dockerignore
+.git
+.gitignore
+.terraform
+*.tfstate*
+*.tfvars*
+/server
+cmd/server/server
+*.log
+.env*
+*.key
+*.pem
+credentials.json
+client_secrets.json
+scratch/
