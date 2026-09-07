@@ -381,4 +381,55 @@ func TestMockAgent_MissingDateHeader_DoesNotGuess(t *testing.T) {
 	}
 }
 
+func TestLogisticsAgent_CallableToolsAndGuidedRecovery(t *testing.T) {
+	ctx := context.Background()
+	ag := agent.NewMockAgent()
+
+	// 1. Verify GetTools() exposes the 5 callable tools
+	toolsList := ag.GetTools()
+	if len(toolsList) != 5 {
+		t.Fatalf("expected 5 tools from GetTools(), got %d", len(toolsList))
+	}
+
+	toolNames := make(map[string]bool)
+	for _, tl := range toolsList {
+		toolNames[tl.Name] = true
+		if tl.Description == "" {
+			t.Errorf("tool '%s' has empty description", tl.Name)
+		}
+	}
+
+	expectedNames := []string{
+		"validate_and_track_carrier_package",
+		"calculate_relative_delivery_date",
+		"lookup_existing_shipment",
+		"reconcile_package_status_transition",
+		"sanitize_and_extract_item_notes",
+	}
+
+	for _, name := range expectedNames {
+		if !toolNames[name] {
+			t.Errorf("expected tool '%s' to be present", name)
+		}
+	}
+
+	// 2. Interactive capability discovery query
+	toolsQueryResp, err := ag.Query(ctx, "What tools do you have?")
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if !strings.Contains(toolsQueryResp, "validate_and_track_carrier_package") {
+		t.Errorf("expected query response to list validate_and_track_carrier_package tool")
+	}
+
+	// 3. Tracking execution query
+	trackQueryResp, err := ag.Query(ctx, "Please track 773918274619")
+	if err != nil {
+		t.Fatalf("track query failed: %v", err)
+	}
+	if !strings.Contains(trackQueryResp, "fedex.com/fedextrack") {
+		t.Errorf("expected tracking link in response: %s", trackQueryResp)
+	}
+}
+
 

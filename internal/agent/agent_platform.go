@@ -11,19 +11,22 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"cloud.google.com/go/vertexai/genai"
+	"github.com/tylerdean/package-tracker-demo/internal/db"
 	"github.com/tylerdean/package-tracker-demo/internal/models"
 	"github.com/tylerdean/package-tracker-demo/internal/storage"
 	"github.com/tylerdean/package-tracker-demo/internal/telemetry"
+	"github.com/tylerdean/package-tracker-demo/internal/tools"
 )
 
 // AgentPlatformAgent implements LogisticsAgent using Gemini on Google Cloud Agent Platform.
 type AgentPlatformAgent struct {
 	client    *genai.Client
 	modelName string
+	store     db.Store
 }
 
 // NewAgentPlatformAgent initializes an Agent Platform Gemini client.
-func NewAgentPlatformAgent(ctx context.Context, projectID, region, modelName string) (*AgentPlatformAgent, error) {
+func NewAgentPlatformAgent(ctx context.Context, projectID, region, modelName string, store ...db.Store) (*AgentPlatformAgent, error) {
 	if region == "" {
 		region = "us-central1"
 	}
@@ -36,12 +39,25 @@ func NewAgentPlatformAgent(ctx context.Context, projectID, region, modelName str
 		return nil, fmt.Errorf("failed to initialize Agent Platform client: %w", err)
 	}
 
+	var st db.Store
+	if len(store) > 0 {
+		st = store[0]
+	}
+
 	return &AgentPlatformAgent{
 		client:    client,
 		modelName: modelName,
+		store:     st,
 	}, nil
 }
 
+func (a *AgentPlatformAgent) SetStore(st db.Store) {
+	a.store = st
+}
+
+func (a *AgentPlatformAgent) GetTools() []*genai.FunctionDeclaration {
+	return tools.GetFunctionDeclarations()
+}
 
 func (a *AgentPlatformAgent) Close() error {
 	return a.client.Close()
@@ -134,15 +150,48 @@ CRITICAL: Never output the literal string "null", "None", or "N/A" for tracking_
 		return nil, fmt.Errorf("failed to parse gemini json output: %w (raw: %s)", err, rawJSON)
 	}
 
-	// Apply deterministic date deduction for tomorrow/relative delivery if indicated
+	// Apply deterministic tool validation, date deduction, and notes sanitization
 	combinedText := email.Subject + " " + email.Body
 	hasRelativeDelivery := storage.HasTomorrowDelivery(combinedText) || storage.HasTodayDelivery(combinedText)
 	for _, p := range result.AllPackages() {
-		if email.SentAt != nil && hasRelativeDelivery {
-			p.ExpectedDeliveryDate = storage.DeduceDeliveryDate(combinedText, email.SentAt)
-		} else if email.SentAt == nil && hasRelativeDelivery {
-			// Without a sent date header, we must never guess or use current time
-			p.ExpectedDeliveryDate = ""
+		// Tool 1: validate_and_track_carrier_package
+		if p.TrackingNumber != "" {
+			toolRes := tools.ExecuteValidateAndTrackCarrierPackage(p.Carrier, p.TrackingNumber, p.Sender)
+			if toolRes.Success {
+				if link, ok := toolRes.Data["tracking_link"].(string); ok && link != "" && p.TrackingLink == "" {
+					p.TrackingLink = link
+				}
+				if c, ok := toolRes.Data["carrier"].(string); ok && c != "Other" {
+					p.Carrier = c
+				}
+			}
+		}
+
+		// Tool 2: calculate_relative_delivery_date
+		if hasRelativeDelivery {
+			sentDateStr := ""
+			if email.SentAt != nil {
+				sentDateStr = email.SentAt.Format(time.RFC3339)
+			}
+			dateToolRes := tools.ExecuteCalculateRelativeDeliveryDate(combinedText, sentDateStr, "UTC")
+			if dateToolRes.Success {
+				if d, ok := dateToolRes.Data["expected_delivery_date"].(string); ok {
+					p.ExpectedDeliveryDate = d
+				}
+			} else {
+				// Follow guided error recovery instructions: never guess or use current time
+				p.ExpectedDeliveryDate = ""
+			}
+		}
+
+		// Tool 3: sanitize_and_extract_item_notes
+		if p.Notes != "" {
+			notesRes := tools.ExecuteSanitizeAndExtractItemNotes(p.Notes, 120)
+			if notesRes.Success {
+				if sn, ok := notesRes.Data["sanitized_notes"].(string); ok && sn != "" {
+					p.Notes = sn
+				}
+			}
 		}
 	}
 
@@ -205,28 +254,80 @@ Formatting guidelines:
 
 func (a *AgentPlatformAgent) Query(ctx context.Context, prompt string) (string, error) {
 	model := a.client.GenerativeModel(a.modelName)
+	model.Tools = []*genai.Tool{tools.GetAgentPlatformTool()}
 	model.SystemInstruction = &genai.Content{
-		Parts: []genai.Part{genai.Text("You are the PackagePulse Logistics Agent deployed on Google Cloud Agent Platform. You assist users with tracking packages, analyzing shipping updates, classifying inbound delivery emails, and summarizing logistics briefings. Answer concisely, professionally, and helpfully.")},
+		Parts: []genai.Part{genai.Text("You are the PackagePulse Logistics Agent deployed on Google Cloud Agent Platform. " +
+			"You assist users with tracking packages, analyzing shipping updates, classifying inbound delivery emails, and summarizing logistics briefings. " +
+			"You have access to 5 specialized callable logistics tools: validate_and_track_carrier_package, calculate_relative_delivery_date, lookup_existing_shipment, reconcile_package_status_transition, and sanitize_and_extract_item_notes. " +
+			"Always call the appropriate tool when user queries require tracking verification or date calculations. If a tool returns guided error recovery instructions, follow them to adjust your parameters. Answer concisely, professionally, and helpfully.")},
 	}
+
+	session := model.StartChat()
 	ctx, llmSpan := telemetry.StartLLMSpan(ctx, "model.generate_content")
-	resp, err := model.GenerateContent(ctx, genai.Text(prompt))
+	defer llmSpan.End()
+
+	resp, err := session.SendMessage(ctx, genai.Text(prompt))
 	if err != nil {
 		llmSpan.RecordError(err)
-		llmSpan.End()
 		return "", fmt.Errorf("gemini query failed: %w", err)
 	}
 
-	if resp != nil && resp.UsageMetadata != nil {
-		llmSpan.SetAttributes(
-			attribute.Int("gen_ai.usage.input_tokens", int(resp.UsageMetadata.PromptTokenCount)),
-			attribute.Int("gen_ai.usage.output_tokens", int(resp.UsageMetadata.CandidatesTokenCount)),
-		)
+	// Tool execution loop: handle up to 5 iterative tool turns
+	for iteration := 0; iteration < 5; iteration++ {
+		if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+			break
+		}
+
+		var functionCalls []*genai.FunctionCall
+		for _, part := range resp.Candidates[0].Content.Parts {
+			if fc, ok := part.(genai.FunctionCall); ok {
+				functionCalls = append(functionCalls, &fc)
+			}
+		}
+
+		if len(functionCalls) == 0 {
+			break
+		}
+
+		// Execute function calls and construct function responses with guided error recovery
+		var responseParts []genai.Part
+		for _, fc := range functionCalls {
+			toolCtx, toolSpan := telemetry.StartAgentSpan(ctx, "tool."+fc.Name)
+			fnResp := tools.ExecuteToolCall(toolCtx, a.store, fc)
+			success := false
+			if s, ok := fnResp.Response["success"].(bool); ok {
+				success = s
+			}
+			toolSpan.SetAttributes(
+				attribute.String("tool.name", fc.Name),
+				attribute.Bool("tool.success", success),
+			)
+			toolSpan.End()
+			responseParts = append(responseParts, *fnResp)
+		}
+
+		// Send tool results back to the model
+		resp, err = session.SendMessage(ctx, responseParts...)
+		if err != nil {
+			llmSpan.RecordError(err)
+			return "", fmt.Errorf("gemini tool response turn failed: %w", err)
+		}
 	}
-	llmSpan.End()
 
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
 		return "No response generated.", nil
 	}
-	return fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0]), nil
+
+	var sb strings.Builder
+	for _, part := range resp.Candidates[0].Content.Parts {
+		if text, ok := part.(genai.Text); ok {
+			sb.WriteString(string(text))
+		}
+	}
+	resultText := sb.String()
+	if resultText == "" {
+		resultText = fmt.Sprintf("%v", resp.Candidates[0].Content.Parts[0])
+	}
+	return resultText, nil
 }
 

@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/vertexai/genai"
 	"github.com/tylerdean/package-tracker-demo/internal/models"
 	"github.com/tylerdean/package-tracker-demo/internal/storage"
+	"github.com/tylerdean/package-tracker-demo/internal/tools"
 )
 
 var (
@@ -122,18 +124,28 @@ func (m *MockAgent) ProcessEmail(ctx context.Context, email storage.ParsedEmail)
 			pkgCarrier = "FedEx"
 		}
 
+		// Validate carrier and tracking link using tool
+		valRes := tools.ExecuteValidateAndTrackCarrierPackage(pkgCarrier, tracking, sender)
 		pkgLink := ""
-		if pkgCarrier == "FedEx" {
-			pkgLink = fmt.Sprintf("https://www.fedex.com/fedextrack/?trknbr=%s", tracking)
-		} else if pkgCarrier == "UPS" {
-			pkgLink = fmt.Sprintf("https://www.ups.com/track?tracknum=%s", tracking)
-		} else if pkgCarrier == "USPS" {
-			pkgLink = fmt.Sprintf("https://tools.usps.com/go/TrackConfirmAction?tLabels=%s", tracking)
+		if valRes.Success {
+			if link, ok := valRes.Data["tracking_link"].(string); ok {
+				pkgLink = link
+			}
+			if c, ok := valRes.Data["carrier"].(string); ok && c != "Other" {
+				pkgCarrier = c
+			}
 		}
 
 		pkgNotes := notes
 		if len(trackings) > 1 {
 			pkgNotes = fmt.Sprintf("%s (Item %d of %d)", notes, i+1, len(trackings))
+		}
+		// Sanitize notes using tool
+		noteRes := tools.ExecuteSanitizeAndExtractItemNotes(pkgNotes, 120)
+		if noteRes.Success {
+			if sn, ok := noteRes.Data["sanitized_notes"].(string); ok && sn != "" {
+				pkgNotes = sn
+			}
 		}
 
 		expectedDate := storage.DeduceDeliveryDate(combined, email.SentAt)
@@ -208,7 +220,37 @@ func (m *MockAgent) ComposeDigest(ctx context.Context, user *models.User, packag
 	</div>`, user.DisplayName, time.Now().Format("Monday, Jan 2"), len(packages), itemsHTML.String()), nil
 }
 
+func (m *MockAgent) GetTools() []*genai.FunctionDeclaration {
+	return tools.GetFunctionDeclarations()
+}
+
 func (m *MockAgent) Query(ctx context.Context, prompt string) (string, error) {
-	return "Hello! I am the PackagePulse Logistics Agent running on Google Cloud Agent Platform. I can track deliveries, parse inbound emails, and generate morning logistics briefings.", nil
+	pLower := strings.ToLower(prompt)
+
+	if strings.Contains(pLower, "tool") || strings.Contains(pLower, "capability") || strings.Contains(pLower, "help") {
+		var sb strings.Builder
+		sb.WriteString("📦 **PackagePulse Logistics Agent Capabilities & Tools**:\n\n")
+		for i, t := range tools.GetFunctionDeclarations() {
+			sb.WriteString(fmt.Sprintf("%d. **`%s`**:\n   %s\n\n", i+1, t.Name, t.Description))
+		}
+		sb.WriteString("All tools support comprehensive parameter schemas and guided error recovery instructions when validation fails.")
+		return sb.String(), nil
+	}
+
+	// Dynamic tool invocation: tracking verification
+	allMatches := trackingRegex.FindAllString(prompt, -1)
+	if len(allMatches) > 0 {
+		tracking := allMatches[0]
+		toolRes := tools.ExecuteValidateAndTrackCarrierPackage("Other", tracking, "")
+		if toolRes.Success {
+			return fmt.Sprintf("Tool executed: `validate_and_track_carrier_package`.\n\n%s\n- **Carrier:** %v\n- **Tracking Number:** %v\n- **Tracking Link:** %v",
+				toolRes.Guidance, toolRes.Data["carrier"], toolRes.Data["tracking_number"], toolRes.Data["tracking_link"]), nil
+		} else if toolRes.Error != nil {
+			return fmt.Sprintf("Tool validation failed: `validate_and_track_carrier_package`.\n- **Error Code:** %s\n- **Error:** %s\n- **Recovery Guidance:** %s\n- **Suggested Action:** %s",
+				toolRes.Error.ErrorCode, toolRes.Error.ErrorMessage, toolRes.Error.RecoveryGuidance, toolRes.Error.SuggestedNextAction), nil
+		}
+	}
+
+	return "Hello! I am the PackagePulse Logistics Agent running on Google Cloud Agent Platform. I can track deliveries, parse inbound emails, execute logistics tools, and generate morning logistics briefings.", nil
 }
 

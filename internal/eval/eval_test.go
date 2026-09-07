@@ -44,4 +44,16 @@ func TestEvaluationSuite_GoldenDataset(t *testing.T) {
 	if report.PIIRedactionRate < 100.0 {
 		t.Errorf("PII redaction rate regression: %.1f%%", report.PIIRedactionRate)
 	}
+
+	if report.ToolNamingScore < 5.0 {
+		t.Errorf("tool naming score regression: %.1f / 5.0", report.ToolNamingScore)
+	}
+
+	if report.ToolDocstringsScore < 5.0 {
+		t.Errorf("tool docstrings score regression: %.1f / 5.0", report.ToolDocstringsScore)
+	}
+
+	if report.GuidedErrorRecoveryScore < 5.0 {
+		t.Errorf("guided error recovery score regression: %.1f / 5.0", report.GuidedErrorRecoveryScore)
+	}
 }

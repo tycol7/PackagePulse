@@ -20,6 +20,7 @@
 - **Package State Reconciler**: Automatically identifies whether an inbound email represents a new shipment or an update to an existing package (e.g. advancing status from `Ordered` $\rightarrow$ `In Transit` $\rightarrow$ `Out for Delivery`).
 - **GenAI Morning Digest**: Synthesizes bespoke, context-aware morning delivery briefings for packages arriving today, complete with tracking links, item notes, delivery reminders, and HTML sanitization defense.
 - **End-to-End Observability**: OpenTelemetry standard trace exporter (`otlptracehttp`) emitting OTLP spans directly to `telemetry.googleapis.com` linked to Agent Platform (`cloud.platform: gcp.agent_engine`) and structured Cloud Logging for every security gate and pipeline tool.
+- **Callable LLM Tools with Guided Error Recovery**: Full Google Cloud Agent Platform / Gemini Function Calling suite ([`internal/tools`](internal/tools)) with 5 domain-specific tools, comprehensive OpenAPI docstrings, and structured error recovery instructions sent back to the model on edge cases.
 - **Automated Agent Evaluation Suite**: Comprehensive regression benchmark suite running against a curated golden dataset (`eval/golden_dataset.json`). Evaluates classification accuracy, structured extraction, relative delivery date deduction, adversarial prompt injection defense, and PII redaction integrity with automated CLI scorecard generation.
 - **1-Command Terraform Deployment**: Automated IaC provisions Cloud Run, Firestore Native, GCS, Secret Manager, Model Armor, and IAM bindings. Available at both root (`main.tf`) and module directory (`terraform/`). Only `PROJECT_ID` is required.
 
@@ -93,6 +94,66 @@ PackagePulse enforces defense-in-depth security before any data is processed or 
 1. **Model Armor Gatekeeper Before Storage**: Inbound emails are screened for prompt injection, jailbreak attempts, and malicious URIs before any persistence occurs. If an email is flagged as malicious, it is rejected immediately and **never stored in Google Cloud Storage**.
 2. **Sensitive Data Protection (SDP) & PII Redaction Before GCS**: For clean emails, all sensitive personal data (recipient names, email addresses, phone numbers, delivery street addresses, credit card numbers, and auth tokens) is redacted using Google Cloud Model Armor's Sensitive Data Protection (SDP) and deterministic redaction before the payload is archived in Cloud Storage.
 3. **Zero-PII Telemetry & Logging**: All structured JSON logs, Cloud Logging events, and OpenTelemetry trace spans are automatically sanitized to ensure no customer PII leaks into operational telemetry.
+
+---
+
+## 🛠️ Callable Tools, Comprehensive Docstrings & Guided Error Recovery
+
+PackagePulse defines a first-class function calling suite ([`internal/tools`](internal/tools)) for Google Cloud Agent Platform (`gemini-2.5-flash`). Rather than relying solely on unstructured prompt completions, the agent exposes 5 callable tool functions equipped with **descriptive domain naming**, **comprehensive OpenAPI docstrings**, and **guided error recovery instructions** sent back to the model when validation fails.
+
+### Tool Catalog & Descriptive Naming
+
+| Tool Function Name | Descriptive Purpose | Key Parameters |
+| :--- | :--- | :--- |
+| `validate_and_track_carrier_package` | Validates carrier detection (FedEx, UPS, USPS, DHL) and tracking syntax via checksum algorithms; constructs canonical HTTPS tracking deep-links. | `carrier`, `tracking_number`, `merchant_name` |
+| `calculate_relative_delivery_date` | Deterministically calculates calendar delivery dates (YYYY-MM-DD) from relative expressions ("tomorrow", "today") strictly using the email's explicit Sent Date header. | `relative_phrase`, `email_sent_date`, `target_timezone` |
+| `lookup_existing_shipment` | Queries the user's active Firestore manifest by tracking number/merchant to determine if an email is an incremental update or a new shipment. | `user_id`, `tracking_number`, `carrier` |
+| `reconcile_package_status_transition` | Enforces state machine transition invariants (`Ordered` $\rightarrow$ `In Transit` $\rightarrow$ `Out for Delivery` $\rightarrow$ `Delivered`) and blocks illegal status regressions. | `current_status`, `new_status`, `has_exception`, `carrier_notes` |
+| `sanitize_and_extract_item_notes` | Sanitizes order contents and item notes, stripping private tokens, URLs, and sensitive customer PII before display on dashboard cards. | `raw_item_text`, `max_length` |
+
+### Comprehensive OpenAPI Docstrings
+
+Every tool function and parameter declares exhaustive OpenAPI 3.03 descriptions so the model understands exact formatting constraints, valid examples, and edge case behaviors:
+
+```go
+{
+    Name: "calculate_relative_delivery_date",
+    Description: "Deterministically converts relative delivery timeframes (e.g., 'tomorrow', 'today', 'next business day', 'in 2 days') into strict ISO-8601 calendar dates (YYYY-MM-DD) anchored strictly to the email's explicit Sent Date header. If the Sent Date header is missing or unparseable, this tool intentionally rejects the calculation with guided error recovery instructions forbidding guessing or using current server time.",
+    Parameters: &genai.Schema{
+        Type: genai.TypeObject,
+        Properties: map[string]*genai.Schema{
+            "relative_phrase": {
+                Type: genai.TypeString,
+                Description: "The relative date expression extracted from the shipping notification (e.g., 'delivering tomorrow', 'arriving today', 'out for delivery tomorrow', 'delivered next business day').",
+            },
+            "email_sent_date": {
+                Type: genai.TypeString,
+                Description: "The RFC3339, RFC1123, or YYYY-MM-DD formatted timestamp representing when the email was sent (e.g., '2026-09-04T10:00:00-07:00' or '2026-09-04'). If no Sent Date header exists in the email, pass an empty string \"\" so the tool can guide you to emit an empty delivery date.",
+            },
+        },
+        Required: []string{"relative_phrase", "email_sent_date"},
+    },
+}
+```
+
+### Guided Error Recovery Instructions
+
+When a tool encounters an error (e.g., malformed tracking number, missing reference date, or illegal status regression), it does not fail silently or return an opaque error string. It sends back a structured **Guided Error Recovery** response providing the model with specific next-step remediation:
+
+```json
+{
+  "tool_name": "calculate_relative_delivery_date",
+  "success": false,
+  "error": {
+    "error_code": "MISSING_REFERENCE_SENT_DATE",
+    "error_message": "Email Sent Date header is missing or empty. Cannot calculate relative delivery date without a calendar anchor.",
+    "recovery_guidance": "STRICT SAFETY RULE: You MUST NOT guess, extrapolate, or use current server time when the email lacks an explicit Sent Date header. You MUST leave expected_delivery_date as an empty string (\"\") and note in the reasoning that relative delivery timing lacks a reference date header.",
+    "suggested_next_action": "EMIT_EMPTY_DELIVERY_DATE",
+    "valid_examples": ["expected_delivery_date: \"\""]
+  },
+  "guidance": "STRICT SAFETY RULE: You MUST NOT guess, extrapolate, or use current server time when the email lacks an explicit Sent Date header. You MUST leave expected_delivery_date as an empty string (\"\") and note in the reasoning that relative delivery timing lacks a reference date header."
+}
+```
 
 ---
 
