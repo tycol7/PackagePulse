@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,15 +27,19 @@ func main() {
 	ctx := context.Background()
 	cfg := config.Load(ctx)
 
-	log.Printf("==================================================================")
-	log.Printf("🚀 Starting PackagePulse (Google Cloud AI Agent)")
-	log.Printf("📦 Port: %s | Project ID: '%s' | Region: %s", cfg.Port, cfg.ProjectID, cfg.Region)
-	log.Printf("==================================================================")
+	// Initialize Google Cloud Logging compatible structured logger via log/slog
+	telemetry.InitLogger(cfg.ProjectID)
+
+	slog.Info("🚀 Starting PackagePulse (Google Cloud AI Agent)",
+		"port", cfg.Port,
+		"project_id", cfg.ProjectID,
+		"region", cfg.Region,
+	)
 
 	// 0. Initialize Cloud Trace & Telemetry
 	shutdownTracer, err := telemetry.InitTracer(ctx, cfg.ProjectID)
 	if err != nil {
-		log.Printf("⚠️  Warning: Could not initialize Cloud Trace exporter: %v", err)
+		slog.Warn("Could not initialize Cloud Trace exporter", "error", err)
 	} else if shutdownTracer != nil {
 		defer func() {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -49,14 +53,14 @@ func main() {
 	if cfg.ProjectID != "" && !cfg.UseMockGCP {
 		fsStore, err := db.NewFirestoreStore(ctx, cfg.ProjectID, cfg.FirestoreDatabaseID)
 		if err != nil {
-			log.Printf("⚠️  Warning: Could not connect to Cloud Firestore (%v). Falling back to in-memory store for local execution.", err)
+			slog.Warn("Could not connect to Cloud Firestore. Falling back to in-memory store for local execution.", "error", err)
 			store = db.NewMemoryStore()
 		} else {
-			log.Printf("✅ Connected to Google Cloud Firestore database: %s", cfg.FirestoreDatabaseID)
+			slog.Info("Connected to Google Cloud Firestore database", "database_id", cfg.FirestoreDatabaseID)
 			store = fsStore
 		}
 	} else {
-		log.Printf("ℹ️  Running with in-memory store (Project ID not set or mock enabled)")
+		slog.Info("Running with in-memory store (Project ID not set or mock enabled)")
 		store = db.NewMemoryStore()
 	}
 	defer store.Close()
@@ -66,14 +70,14 @@ func main() {
 	if cfg.GCSBucketName != "" && !cfg.UseMockGCP {
 		gcs, err := storage.NewGCSStorage(ctx, cfg.GCSBucketName)
 		if err != nil {
-			log.Printf("⚠️  Warning: Could not connect to GCS bucket '%s' (%v). Falling back to memory storage.", cfg.GCSBucketName, err)
+			slog.Warn("Could not connect to GCS bucket. Falling back to memory storage.", "bucket", cfg.GCSBucketName, "error", err)
 			blobStore = storage.NewMemoryStorage()
 		} else {
-			log.Printf("✅ Connected to Google Cloud Storage bucket: gs://%s", cfg.GCSBucketName)
+			slog.Info("Connected to Google Cloud Storage bucket", "bucket", cfg.GCSBucketName)
 			blobStore = gcs
 		}
 	} else {
-		log.Printf("ℹ️  Running with in-memory blob storage for raw email bytes")
+		slog.Info("Running with in-memory blob storage for raw email bytes")
 		blobStore = storage.NewMemoryStorage()
 	}
 	defer blobStore.Close()
@@ -83,14 +87,14 @@ func main() {
 	if cfg.ProjectID != "" && !cfg.UseMockGCP {
 		apAgent, err := agent.NewAgentPlatformAgent(ctx, cfg.ProjectID, cfg.Region, cfg.GeminiModel)
 		if err != nil {
-			log.Printf("⚠️  Warning: Could not connect to Agent Platform (%v). Falling back to local Mock Agent.", err)
+			slog.Warn("Could not connect to Agent Platform. Falling back to local Mock Agent.", "error", err)
 			aiAgent = agent.NewMockAgent()
 		} else {
-			log.Printf("✅ Connected to Agent Platform Gemini model: %s", cfg.GeminiModel)
+			slog.Info("Connected to Agent Platform Gemini model", "model", cfg.GeminiModel)
 			aiAgent = apAgent
 		}
 	} else {
-		log.Printf("ℹ️  Running with Mock Logistics Agent")
+		slog.Info("Running with Mock Logistics Agent")
 		aiAgent = agent.NewMockAgent()
 	}
 	defer aiAgent.Close()
@@ -100,14 +104,14 @@ func main() {
 	if cfg.ProjectID != "" && !cfg.UseMockGCP {
 		maClient, err := security.NewCloudModelArmorService(ctx, cfg.ProjectID, cfg.Region, cfg.ModelArmorTemplate)
 		if err != nil {
-			log.Printf("⚠️  Warning: Could not connect to Model Armor (%v). Falling back to mock model armor.", err)
+			slog.Warn("Could not connect to Model Armor. Falling back to mock model armor.", "error", err)
 			modelArmor = security.NewMockModelArmorService()
 		} else {
-			log.Printf("🛡️  Connected to Google Cloud Model Armor template: %s", cfg.ModelArmorTemplate)
+			slog.Info("Connected to Google Cloud Model Armor template", "template", cfg.ModelArmorTemplate)
 			modelArmor = maClient
 		}
 	} else {
-		log.Printf("ℹ️  Running with Mock Model Armor service")
+		slog.Info("Running with Mock Model Armor service")
 		modelArmor = security.NewMockModelArmorService()
 	}
 	defer modelArmor.Close()
@@ -123,7 +127,8 @@ func main() {
 	// 5. Parse Templates
 	tmpl, err := template.ParseFS(templates.FS, "*.html")
 	if err != nil {
-		log.Fatalf("Failed parsing templates: %v", err)
+		slog.Error("Failed parsing templates", "error", err)
+		os.Exit(1)
 	}
 
 	// 6. Initialize Handlers
@@ -207,9 +212,10 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("🌐 Web server listening on http://localhost:%s", cfg.Port)
+		slog.Info("🌐 Web server listening", "url", "http://localhost:"+cfg.Port, "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+			slog.Error("Server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -217,11 +223,11 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Printf("🛑 Shutting down server gracefully...")
+	slog.Info("🛑 Shutting down server gracefully...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+		slog.Error("Error during shutdown", "error", err)
 	}
-	log.Printf("👋 Server stopped")
+	slog.Info("👋 Server stopped")
 }

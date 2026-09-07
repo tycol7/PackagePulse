@@ -97,6 +97,44 @@ PackagePulse enforces defense-in-depth security before any data is processed or 
 
 ---
 
+## 📋 Dedicated Structured Logging with `log/slog` & Cloud Trace Correlation
+
+PackagePulse utilizes Go's standard library `log/slog` ([`internal/telemetry`](internal/telemetry)) for production structured logging:
+
+- **No Custom `json.Marshal` / `fmt.Println`**: All operational logging and pipeline telemetry steps utilize dedicated `log/slog` handlers (`slog.Logger`, `slog.Handler`) with structured attributes.
+- **Google Cloud Logging Compliant Schema**:
+  - `severity`: Automatically mapped from `slog.Level` (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
+  - `timestamp`: RFC3339Nano UTC timestamp.
+  - `message`: Text summary with automatic PII redaction.
+  - `logging.googleapis.com/trace`: Directly populated from OpenTelemetry span context (`projects/${PROJECT_ID}/traces/${TRACE_ID}`).
+  - `logging.googleapis.com/spanId`: Active OpenTelemetry span ID.
+  - `logging.googleapis.com/trace_sampled`: Trace sampling indicator.
+- **Automatic Inline PII Scrubbing**: The `slog.HandlerOptions.ReplaceAttr` hook automatically sanitizes any customer emails, phone numbers, delivery addresses, SSNs, credit cards, or bearer tokens before records are written to standard output.
+- **Context-Aware Correlation**: Methods like `telemetry.LogStep(ctx, ...)`, `slog.InfoContext(ctx, ...)`, `slog.WarnContext(ctx, ...)`, and `slog.ErrorContext(ctx, ...)` automatically extract trace spans and conversation IDs (`gen_ai.conversation.id`) from the request context.
+
+```json
+{
+  "timestamp": "2026-09-07T03:41:57.454893937Z",
+  "severity": "INFO",
+  "message": "[Agent Platform] [Reconciler] reconciliation: New Package Created",
+  "agent_name": "Reconciler",
+  "step": "reconciliation",
+  "status": "New Package Created",
+  "package_id": "pkg_04dc9f92f7243d38",
+  "sender": "Google Store",
+  "carrier": "FedEx",
+  "tracking_number": "123456789012",
+  "status": "In Transit",
+  "is_new": true,
+  "logging.googleapis.com/trace": "projects/package-tracker-demo/traces/4bf92f3577b34da6a3ce929d0e0e4736",
+  "logging.googleapis.com/spanId": "00f067aa0ba902b7",
+  "logging.googleapis.com/trace_sampled": true,
+  "gen_ai.conversation.id": "session-user_clean"
+}
+```
+
+---
+
 ## 🛠️ Callable Tools, Comprehensive Docstrings & Guided Error Recovery
 
 PackagePulse defines a first-class function calling suite ([`internal/tools`](internal/tools)) for Google Cloud Agent Platform (`gemini-2.5-flash`). Rather than relying solely on unstructured prompt completions, the agent exposes 5 callable tool functions equipped with **descriptive domain naming**, **comprehensive OpenAPI docstrings**, and **guided error recovery instructions** sent back to the model when validation fails.

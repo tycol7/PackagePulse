@@ -3,7 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	modelarmor "cloud.google.com/go/modelarmor/apiv1"
@@ -93,7 +93,7 @@ func (s *CloudModelArmorService) ScreenPrompt(ctx context.Context, text string) 
 	resp, err := s.client.SanitizeUserPrompt(ctx, req)
 	if err != nil {
 		span.RecordError(err)
-		log.Printf("[ModelArmor] Warning: SanitizeUserPrompt request failed: %v", err)
+		slog.WarnContext(ctx, "[ModelArmor] SanitizeUserPrompt request failed", "error", err)
 		// On unexpected API error, log error and allow execution to proceed gracefully
 		res := &SanitizeResult{
 			Passed:        true,

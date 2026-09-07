@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -37,7 +37,7 @@ func (h *WebHandler) ShowLogin(w http.ResponseWriter, r *http.Request) {
 		"Title": "Sign In | PackagePulse",
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "login.html", data); err != nil {
-		log.Printf("Error rendering login: %v", err)
+		slog.Error("Error rendering login", "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
@@ -56,7 +56,7 @@ func (h *WebHandler) StartGoogleOAuth(w http.ResponseWriter, r *http.Request) {
 func (h *WebHandler) HandleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	user, err := h.authService.ExchangeAndValidate(r.Context(), r)
 	if err != nil {
-		log.Printf("OAuth authentication failed: %v", err)
+		slog.Warn("OAuth authentication failed", "error", err)
 		http.Error(w, "Authentication Failed: "+err.Error(), http.StatusUnauthorized)
 		return
 	}
@@ -65,7 +65,7 @@ func (h *WebHandler) HandleGoogleCallback(w http.ResponseWriter, r *http.Request
 	existing, err := h.store.GetUser(r.Context(), user.ID)
 	if err != nil || existing == nil {
 		if err := h.store.SaveUser(r.Context(), user); err != nil {
-			log.Printf("Failed saving user profile: %v", err)
+			slog.Warn("Failed saving user profile", "error", err)
 		}
 	} else {
 		user.Preferences = existing.Preferences
@@ -129,7 +129,7 @@ func (h *WebHandler) ShowDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
-		log.Printf("Error rendering dashboard: %v", err)
+		slog.Error("Error rendering dashboard", "error", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }

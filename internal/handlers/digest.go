@@ -3,7 +3,7 @@ package handlers
 import (
 	"fmt"
 	"html/template"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"time"
@@ -110,7 +110,7 @@ func (h *DigestHandler) GeneratePreview(w http.ResponseWriter, r *http.Request) 
 	htmlContent, err := h.agent.ComposeDigest(ctx, user, packages)
 	if err != nil {
 		span.RecordError(err)
-		log.Printf("[Digest] Error composing digest: %v", err)
+		slog.ErrorContext(ctx, "[Digest] Error composing digest", "error", err)
 		data := map[string]interface{}{
 			"User":  user,
 			"Error": err.Error(),

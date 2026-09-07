@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -115,14 +115,17 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		contentToScreen := fmt.Sprintf("Subject: %s\nFrom: %s\n\n%s", parsed.Subject, parsed.From, parsed.Body)
 		armorResult, err := h.modelArmor.ScreenPrompt(ctx, contentToScreen)
 		if err != nil {
-			log.Printf("[ModelArmor] Warning: screening returned error: %v", err)
+			slog.WarnContext(ctx, "[ModelArmor] Warning: screening returned error", "error", err)
 		} else if armorResult != nil && !armorResult.Passed {
 			reason := armorResult.BlockedReason
 			if reason == "" {
 				reason = "Inbound email blocked by Model Armor security policy."
 			}
-			log.Printf("[Security] Inbound email BLOCKED by Model Armor: %s (jailbreak=%t, confidence=%s)",
-				reason, armorResult.JailbreakDetected, armorResult.Confidence)
+			slog.WarnContext(ctx, "[Security] Inbound email BLOCKED by Model Armor",
+				"reason", reason,
+				"jailbreak", armorResult.JailbreakDetected,
+				"confidence", armorResult.Confidence,
+			)
 
 			telemetry.LogStep(ctx, projectID, "SecurityGate", "model_armor_sanitize", "BLOCKED", map[string]interface{}{
 				"reason":             reason,
@@ -151,9 +154,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	redactedBytes := security.RedactEmailPayload(header.Filename, rawBytes)
 	gcsPath := fmt.Sprintf("inbound/%s/%d_redacted_%s", session.UserID, time.Now().Unix(), header.Filename)
 	if err := h.blobStore.WriteBytes(ctx, gcsPath, redactedBytes); err != nil {
-		log.Printf("[GCS] Warning: Failed writing redacted bytes to bucket: %v", err)
+		slog.WarnContext(ctx, "[GCS] Warning: Failed writing redacted bytes to bucket", "error", err)
 	} else {
-		log.Printf("[GCS] Successfully archived PII-redacted email payload at gs://.../%s", gcsPath)
+		slog.InfoContext(ctx, "[GCS] Successfully archived PII-redacted email payload", "gcs_path", gcsPath)
 	}
 	gcsSpan.SetAttributes(
 		attribute.String("gcs.path", gcsPath),
@@ -182,7 +185,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		classifierSpan.RecordError(err)
 		classifierSpan.End()
-		log.Printf("[Agent] Error processing email: %v", err)
+		slog.ErrorContext(ctx, "[Agent] Error processing email", "error", err)
 		http.Error(w, "AI Agent processing failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -203,7 +206,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		)
 		classifierSpan.End()
 
-		log.Printf("[Agent] Inbound email discarded: %s", reason)
+		slog.InfoContext(ctx, "[Agent] Inbound email discarded", "reason", reason)
 		telemetry.LogStep(ctx, projectID, "Classifier", "classify_delivery_email", "DISCARDED", map[string]interface{}{
 			"is_tracking": false,
 			"confidence":  result.Confidence,
@@ -263,7 +266,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			pkgSpan.RecordError(err)
 			pkgSpan.End()
-			log.Printf("[Agent] Reconciliation failed for package %d (%s): %v", i+1, pkgFields.TrackingNumber, err)
+			slog.WarnContext(ctx, "[Agent] Reconciliation failed for package", "package_index", i+1, "tracking_number", pkgFields.TrackingNumber, "error", err)
 			continue
 		}
 
@@ -308,7 +311,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		actionMsg = "Email processed, but no packages were recorded."
 	}
-	log.Printf("[Agent] %s", security.RedactPII(actionMsg))
+	slog.InfoContext(ctx, "[Agent] Package action completed", "action", security.RedactPII(actionMsg))
 
 	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"showToast": "%s"}`, security.RedactPII(actionMsg)))
 

@@ -2,14 +2,15 @@ package telemetry
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -123,7 +124,10 @@ func InitTracer(ctx context.Context, projectID string) (func(context.Context) er
 		propagation.Baggage{},
 	))
 
-	log.Printf("✅ Initialized OpenTelemetry OTLP Google Cloud Telemetry exporter for ReasoningEngine: %s, project: %s", agentEngineID, projectID)
+	slog.Info("✅ Initialized OpenTelemetry OTLP Google Cloud Telemetry exporter",
+		"reasoning_engine_id", agentEngineID,
+		"project_id", projectID,
+	)
 	return tp.Shutdown, nil
 }
 
@@ -231,7 +235,178 @@ func SanitizeLogMap(m map[string]interface{}) map[string]interface{} {
 	return clean
 }
 
-// LogStep emits structured Google Cloud Logging JSON to stdout, correlated with Cloud Trace.
+// GCPHandler is a dedicated slog.Handler that enriches records for Google Cloud Logging:
+// 1. Injects Cloud Trace correlation ("logging.googleapis.com/trace", "logging.googleapis.com/spanId", "logging.googleapis.com/trace_sampled")
+//    from OpenTelemetry span context in context.Context.
+// 2. Injects Generative AI session ID ("gen_ai.conversation.id") when present in context.Context.
+// 3. Formats severity, timestamp, and message keys according to GCP Cloud Logging specification.
+// 4. Automatically scrubs PII from all logged strings, messages, and payloads via RedactPII and SanitizeLogMap.
+type GCPHandler struct {
+	next      slog.Handler
+	projectID string
+}
+
+// NewGCPHandler creates a new GCP-compliant slog.Handler writing structured JSON to w.
+func NewGCPHandler(w io.Writer, projectID string) *GCPHandler {
+	if projectID == "" {
+		projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
+		if projectID == "" {
+			projectID = "package-tracker-demo"
+		}
+	}
+
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Map slog Level to GCP Cloud Logging severity string
+			if a.Key == slog.LevelKey {
+				level, ok := a.Value.Any().(slog.Level)
+				if !ok {
+					return slog.String("severity", "INFO")
+				}
+				var sev string
+				switch {
+				case level < slog.LevelInfo:
+					sev = "DEBUG"
+				case level < slog.LevelWarn:
+					sev = "INFO"
+				case level < slog.LevelError:
+					sev = "WARNING"
+				default:
+					sev = "ERROR"
+				}
+				return slog.String("severity", sev)
+			}
+			// Map msg to message and sanitize PII
+			if a.Key == slog.MessageKey {
+				return slog.String("message", RedactPII(a.Value.String()))
+			}
+			// Map time to timestamp in RFC3339Nano UTC
+			if a.Key == slog.TimeKey {
+				return slog.String("timestamp", a.Value.Time().UTC().Format(time.RFC3339Nano))
+			}
+			// Automatically scrub PII from any string attribute
+			if a.Value.Kind() == slog.KindString {
+				return slog.String(a.Key, RedactPII(a.Value.String()))
+			}
+			if a.Value.Kind() == slog.KindAny {
+				switch val := a.Value.Any().(type) {
+				case string:
+					return slog.String(a.Key, RedactPII(val))
+				case map[string]interface{}:
+					return slog.Any(a.Key, SanitizeLogMap(val))
+				}
+			}
+			return a
+		},
+	}
+
+	baseHandler := slog.NewJSONHandler(w, opts)
+	return &GCPHandler{
+		next:      baseHandler,
+		projectID: projectID,
+	}
+}
+
+func (h *GCPHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h *GCPHandler) Handle(ctx context.Context, r slog.Record) error {
+	projectID := h.projectID
+	if projectID == "" {
+		projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
+		if projectID == "" {
+			projectID = "package-tracker-demo"
+		}
+	}
+
+	// Enrich with OpenTelemetry Cloud Trace correlation
+	span := trace.SpanFromContext(ctx)
+	sc := span.SpanContext()
+	if sc.IsValid() {
+		r.AddAttrs(
+			slog.String("logging.googleapis.com/trace", fmt.Sprintf("projects/%s/traces/%s", projectID, sc.TraceID().String())),
+			slog.String("logging.googleapis.com/spanId", sc.SpanID().String()),
+			slog.Bool("logging.googleapis.com/trace_sampled", sc.IsSampled()),
+		)
+	}
+
+	sessionID := SessionIDFromContext(ctx)
+	if sessionID != "" {
+		r.AddAttrs(slog.String("gen_ai.conversation.id", sessionID))
+	}
+
+	return h.next.Handle(ctx, r)
+}
+
+func (h *GCPHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &GCPHandler{
+		next:      h.next.WithAttrs(attrs),
+		projectID: h.projectID,
+	}
+}
+
+func (h *GCPHandler) WithGroup(name string) slog.Handler {
+	return &GCPHandler{
+		next:      h.next.WithGroup(name),
+		projectID: h.projectID,
+	}
+}
+
+var (
+	globalLogger   *slog.Logger
+	globalLoggerMu sync.RWMutex
+)
+
+// InitLogger configures and sets the default slog.Logger formatted for Google Cloud Logging with trace correlation and PII redaction.
+func InitLogger(projectID string) *slog.Logger {
+	return InitLoggerWithWriter(os.Stdout, projectID)
+}
+
+// InitLoggerWithWriter allows configuring structured slog logging to an arbitrary writer (useful for unit tests and verification).
+func InitLoggerWithWriter(w io.Writer, projectID string) *slog.Logger {
+	handler := NewGCPHandler(w, projectID)
+	logger := slog.New(handler)
+	globalLoggerMu.Lock()
+	globalLogger = logger
+	globalLoggerMu.Unlock()
+	slog.SetDefault(logger)
+	return logger
+}
+
+// Logger returns the configured slog.Logger instance, initializing with defaults if not already configured.
+func Logger() *slog.Logger {
+	globalLoggerMu.RLock()
+	l := globalLogger
+	globalLoggerMu.RUnlock()
+	if l != nil {
+		return l
+	}
+	return InitLogger(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+}
+
+// InfoContext logs an informational message via slog with Cloud Trace correlation and PII scrubbing.
+func InfoContext(ctx context.Context, msg string, args ...any) {
+	Logger().InfoContext(ctx, msg, args...)
+}
+
+// WarnContext logs a warning message via slog with Cloud Trace correlation and PII scrubbing.
+func WarnContext(ctx context.Context, msg string, args ...any) {
+	Logger().WarnContext(ctx, msg, args...)
+}
+
+// ErrorContext logs an error message via slog with Cloud Trace correlation and PII scrubbing.
+func ErrorContext(ctx context.Context, msg string, args ...any) {
+	Logger().ErrorContext(ctx, msg, args...)
+}
+
+// DebugContext logs a debug message via slog with Cloud Trace correlation and PII scrubbing.
+func DebugContext(ctx context.Context, msg string, args ...any) {
+	Logger().DebugContext(ctx, msg, args...)
+}
+
+// LogStep emits structured Google Cloud Logging JSON via dedicated log/slog, correlated with Cloud Trace.
 // All payload fields and messages are automatically scrubbed of PII.
 func LogStep(ctx context.Context, projectID, agentName, stepName, status string, payload map[string]interface{}) {
 	if projectID == "" {
@@ -241,33 +416,19 @@ func LogStep(ctx context.Context, projectID, agentName, stepName, status string,
 		}
 	}
 
-	span := trace.SpanFromContext(ctx)
-	sc := span.SpanContext()
-
-	entry := map[string]interface{}{
-		"severity":   "INFO",
-		"message":    RedactPII(fmt.Sprintf("[Agent Platform] [%s] %s: %s", agentName, stepName, status)),
-		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
-		"agent_name": agentName,
-		"step":       stepName,
-		"status":     status,
-	}
-
-	if sc.IsValid() {
-		entry["logging.googleapis.com/trace"] = fmt.Sprintf("projects/%s/traces/%s", projectID, sc.TraceID().String())
-		entry["logging.googleapis.com/spanId"] = sc.SpanID().String()
-		entry["logging.googleapis.com/trace_sampled"] = sc.IsSampled()
+	attrs := []slog.Attr{
+		slog.String("agent_name", agentName),
+		slog.String("step", stepName),
+		slog.String("status", status),
 	}
 
 	sanitizedPayload := SanitizeLogMap(payload)
 	for k, v := range sanitizedPayload {
-		entry[k] = v
+		attrs = append(attrs, slog.Any(k, v))
 	}
 
-	data, err := json.Marshal(entry)
-	if err == nil {
-		fmt.Println(string(data))
-	}
+	msg := fmt.Sprintf("[Agent Platform] [%s] %s: %s", agentName, stepName, status)
+	Logger().LogAttrs(ctx, slog.LevelInfo, msg, attrs...)
 }
 
 type contextKey string

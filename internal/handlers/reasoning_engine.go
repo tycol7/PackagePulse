@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -114,7 +114,7 @@ func (h *ReasoningEngineHandler) HandleQuery(w http.ResponseWriter, r *http.Requ
 	output, err := h.dispatchQuery(ctx, req.Input, prompt)
 	if err != nil {
 		span.RecordError(err)
-		log.Printf("[ReasoningEngine] Query failed: %v", err)
+		slog.ErrorContext(ctx, "[ReasoningEngine] Query failed", "error", err)
 		http.Error(w, fmt.Sprintf("Agent execution failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -171,7 +171,7 @@ func (h *ReasoningEngineHandler) HandleStreamQuery(w http.ResponseWriter, r *htt
 	output, err := h.dispatchQuery(ctx, req.Input, prompt)
 	if err != nil {
 		span.RecordError(err)
-		log.Printf("[ReasoningEngine] Stream query failed: %v", err)
+		slog.ErrorContext(ctx, "[ReasoningEngine] Stream query failed", "error", err)
 		http.Error(w, fmt.Sprintf("Agent execution failed: %v", err), http.StatusInternalServerError)
 		return
 	}

@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -48,7 +48,7 @@ func Load(ctx context.Context) *Config {
 			b := make([]byte, 32)
 			if _, err := rand.Read(b); err == nil {
 				sessionSecret = hex.EncodeToString(b)
-				log.Printf("[Config] Generated ephemeral 256-bit session secret for Cloud Run instance")
+				slog.Info("[Config] Generated ephemeral 256-bit session secret for Cloud Run instance")
 			}
 		}
 		if sessionSecret == "" {
@@ -77,7 +77,7 @@ func Load(ctx context.Context) *Config {
 		if secretVal, err := fetchSecret(ctx, cfg.ProjectID, secretName); err == nil && secretVal != "" {
 			cfg.GoogleClientSecret = secretVal
 		} else if err != nil {
-			log.Printf("[Config] Notice: Could not read secret %s from Secret Manager: %v", secretName, err)
+			slog.Warn("[Config] Could not read secret from Secret Manager", "secret_name", secretName, "error", err)
 		}
 	}
 
