@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -173,8 +174,65 @@ func ExtractTraceContext(r *http.Request) context.Context {
 	return ctx
 }
 
+var (
+	emailRegex          = regexp.MustCompile(`(?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b`)
+	phoneFormattedRegex = regexp.MustCompile(`(?i)\b(?:\+?1[-.\s]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})[-.\s][2-9]\d{2}[-.\s]\d{4}\b`)
+	phoneParenRegex     = regexp.MustCompile(`\([2-9]\d{2}\)\s*[2-9]\d{2}[-.\s]?\d{4}\b`)
+	ssnRegex            = regexp.MustCompile(`\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b`)
+	creditCardRegex     = regexp.MustCompile(`\b(?:4[0-9]{3}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}|5[1-5][0-9]{2}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4}|3[47][0-9]{2}[ -][0-9]{6}[ -][0-9]{5}|6(?:011|5[0-9]{2})[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{4})\b`)
+	streetSuffixes      = `(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Drive|Dr\.?|Lane|Ln\.?|Way|Court|Ct\.?|Circle|Cir\.?|Place|Pl\.?|Terrace|Ter\.?|Parkway|Pkwy\.?|Suite|Ste\.?|Apt\.?)`
+	addressRegex        = regexp.MustCompile(`(?i)\b\d{1,5}\s+[A-Za-z0-9\.\s,]{2,30}\s+` + streetSuffixes + `\b(?:[,\s]+[A-Za-z\s]+[,\s]+[A-Z]{2}\s+\d{5}(?:-\d{4})?)?`)
+	secretRegex         = regexp.MustCompile(`(?i)\b(bearer\s+[a-zA-Z0-9_\-\.]{20,}|ghp_[a-zA-Z0-9]{36}|AIza[0-9A-Za-z-_]{35})\b`)
+)
+
+// RedactPII scrubs sensitive personal identifiable information (PII) including emails, phones, addresses, SSNs, credit cards, and secrets.
+func RedactPII(text string) string {
+	if text == "" {
+		return ""
+	}
+	res := secretRegex.ReplaceAllString(text, "[SECRET_REDACTED]")
+	res = creditCardRegex.ReplaceAllString(res, "[CREDENTIAL_REDACTED]")
+	res = ssnRegex.ReplaceAllString(res, "[SSN_REDACTED]")
+	res = addressRegex.ReplaceAllString(res, "[ADDRESS_REDACTED]")
+	res = phoneFormattedRegex.ReplaceAllString(res, "[PHONE_REDACTED]")
+	res = phoneParenRegex.ReplaceAllString(res, "[PHONE_REDACTED]")
+	res = emailRegex.ReplaceAllString(res, "[EMAIL_REDACTED]")
+	return res
+}
+
+// SanitizeLogMap recursively scrubs all string values in a telemetry payload map to prevent PII leakage.
+func SanitizeLogMap(m map[string]interface{}) map[string]interface{} {
+	if m == nil {
+		return nil
+	}
+	clean := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			clean[k] = RedactPII(val)
+		case map[string]interface{}:
+			clean[k] = SanitizeLogMap(val)
+		case []interface{}:
+			cleanArr := make([]interface{}, len(val))
+			for i, item := range val {
+				if strItem, ok := item.(string); ok {
+					cleanArr[i] = RedactPII(strItem)
+				} else if mapItem, ok := item.(map[string]interface{}); ok {
+					cleanArr[i] = SanitizeLogMap(mapItem)
+				} else {
+					cleanArr[i] = item
+				}
+			}
+			clean[k] = cleanArr
+		default:
+			clean[k] = v
+		}
+	}
+	return clean
+}
+
 // LogStep emits structured Google Cloud Logging JSON to stdout, correlated with Cloud Trace.
-// Cloud Trace Explorer will automatically nest these log entries directly under the active span.
+// All payload fields and messages are automatically scrubbed of PII.
 func LogStep(ctx context.Context, projectID, agentName, stepName, status string, payload map[string]interface{}) {
 	if projectID == "" {
 		projectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
@@ -188,7 +246,7 @@ func LogStep(ctx context.Context, projectID, agentName, stepName, status string,
 
 	entry := map[string]interface{}{
 		"severity":   "INFO",
-		"message":    fmt.Sprintf("[Agent Platform] [%s] %s: %s", agentName, stepName, status),
+		"message":    RedactPII(fmt.Sprintf("[Agent Platform] [%s] %s: %s", agentName, stepName, status)),
 		"timestamp":  time.Now().UTC().Format(time.RFC3339Nano),
 		"agent_name": agentName,
 		"step":       stepName,
@@ -201,7 +259,8 @@ func LogStep(ctx context.Context, projectID, agentName, stepName, status string,
 		entry["logging.googleapis.com/trace_sampled"] = sc.IsSampled()
 	}
 
-	for k, v := range payload {
+	sanitizedPayload := SanitizeLogMap(payload)
+	for k, v := range sanitizedPayload {
 		entry[k] = v
 	}
 

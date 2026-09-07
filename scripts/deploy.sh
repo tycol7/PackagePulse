@@ -149,14 +149,22 @@ terraform apply -auto-approve \
   -var="project_id=${PROJECT_ID}" \
   -var="region=${REGION}"
 
-# Ensure Model Armor template exists
-echo "🛡️  Ensuring Model Armor template 'email-armor-guard' is provisioned..."
+# Ensure Model Armor template exists with SDP basic config for sensitive data protection
+echo "🛡️  Ensuring Model Armor template 'email-armor-guard' is provisioned with SDP..."
 gcloud model-armor templates create email-armor-guard \
   --project="$PROJECT_ID" \
   --location="$REGION" \
   --pi-and-jailbreak-filter-settings-enforcement=enabled \
   --pi-and-jailbreak-filter-settings-confidence-level=medium-and-above \
-  --malicious-uri-filter-settings-enforcement=enabled --quiet 2>/dev/null || true
+  --malicious-uri-filter-settings-enforcement=enabled \
+  --basic-config-filter-enforcement=enabled --quiet 2>/dev/null || \
+gcloud model-armor templates update email-armor-guard \
+  --project="$PROJECT_ID" \
+  --location="$REGION" \
+  --pi-and-jailbreak-filter-settings-enforcement=enabled \
+  --pi-and-jailbreak-filter-settings-confidence-level=medium-and-above \
+  --malicious-uri-filter-settings-enforcement=enabled \
+  --basic-config-filter-enforcement=enabled --quiet 2>/dev/null || true
 
 # Ensure public web access without IAM check (compatible with org-restricted projects)
 echo "🌐 Ensuring public web ingress without IAM check..."

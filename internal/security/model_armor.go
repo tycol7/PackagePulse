@@ -17,12 +17,15 @@ import (
 
 // SanitizeResult describes the verdict of screening a prompt via Google Cloud Model Armor.
 type SanitizeResult struct {
-	Passed            bool   `json:"passed"`
-	MatchFound        bool   `json:"match_found"`
-	JailbreakDetected bool   `json:"jailbreak_detected"`
-	Confidence        string `json:"confidence,omitempty"`
-	BlockedReason     string `json:"blocked_reason,omitempty"`
-	Details           string `json:"details,omitempty"`
+	Passed            bool     `json:"passed"`
+	MatchFound        bool     `json:"match_found"`
+	JailbreakDetected bool     `json:"jailbreak_detected"`
+	Confidence        string   `json:"confidence,omitempty"`
+	BlockedReason     string   `json:"blocked_reason,omitempty"`
+	SanitizedText     string   `json:"sanitized_text,omitempty"`
+	PIIFound          bool     `json:"pii_found,omitempty"`
+	InfoTypes         []string `json:"info_types,omitempty"`
+	Details           string   `json:"details,omitempty"`
 }
 
 // ModelArmorService abstracts prompt screening and sanitization.
@@ -110,40 +113,88 @@ func (s *CloudModelArmorService) ScreenPrompt(ctx context.Context, text string) 
 
 	if resp != nil && resp.SanitizationResult != nil {
 		sr := resp.SanitizationResult
-		if sr.FilterMatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
-			result.Passed = false
-			result.MatchFound = true
 
-			// Inspect individual filters
-			if pi, ok := sr.FilterResults["pi_and_jailbreak"]; ok && pi != nil {
-				if piRes := pi.GetPiAndJailbreakFilterResult(); piRes != nil {
-					if piRes.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
-						result.JailbreakDetected = true
-						result.Confidence = piRes.ConfidenceLevel.String()
-						result.BlockedReason = "Prompt injection or jailbreak attempt detected by Model Armor"
-					}
+		// 1. Inspect Prompt Injection and Jailbreak (Malicious payload)
+		if pi, ok := sr.FilterResults["pi_and_jailbreak"]; ok && pi != nil {
+			if piRes := pi.GetPiAndJailbreakFilterResult(); piRes != nil {
+				if piRes.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
+					result.Passed = false
+					result.MatchFound = true
+					result.JailbreakDetected = true
+					result.Confidence = piRes.ConfidenceLevel.String()
+					result.BlockedReason = "Prompt injection or jailbreak attempt detected by Model Armor"
 				}
-			}
-			if uri, ok := sr.FilterResults["malicious_uris"]; ok && uri != nil {
-				if uriRes := uri.GetMaliciousUriFilterResult(); uriRes != nil {
-					if uriRes.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
-						result.BlockedReason = "Malicious URI detected by Model Armor"
-					}
-				}
-			}
-			if result.BlockedReason == "" {
-				result.BlockedReason = "Content safety policy violation detected by Model Armor"
 			}
 		}
+
+		// 2. Inspect Malicious URIs (Malicious payload)
+		if uri, ok := sr.FilterResults["malicious_uris"]; ok && uri != nil {
+			if uriRes := uri.GetMaliciousUriFilterResult(); uriRes != nil {
+				if uriRes.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
+					result.Passed = false
+					result.MatchFound = true
+					result.BlockedReason = "Malicious URI detected by Model Armor"
+				}
+			}
+		}
+
+		// 3. Inspect CSAM (Malicious payload)
+		if csam, ok := sr.FilterResults["csam"]; ok && csam != nil {
+			if csamRes := csam.GetCsamFilterFilterResult(); csamRes != nil {
+				if csamRes.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
+					result.Passed = false
+					result.MatchFound = true
+					result.BlockedReason = "Harmful content policy violation detected by Model Armor"
+				}
+			}
+		}
+
+		// 4. Inspect Sensitive Data Protection (SDP / PII)
+		if sdp, ok := sr.FilterResults["sdp"]; ok && sdp != nil {
+			if sdpRes := sdp.GetSdpFilterResult(); sdpRes != nil {
+				if inspect := sdpRes.GetInspectResult(); inspect != nil {
+					if inspect.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
+						result.PIIFound = true
+						for _, f := range inspect.Findings {
+							result.InfoTypes = append(result.InfoTypes, f.InfoType)
+						}
+					}
+				}
+				if deid := sdpRes.GetDeidentifyResult(); deid != nil {
+					if deid.MatchState == modelarmorpb.FilterMatchState_MATCH_FOUND {
+						result.PIIFound = true
+						result.InfoTypes = append(result.InfoTypes, deid.InfoTypes...)
+						if deid.Data != nil && deid.Data.GetText() != "" {
+							result.SanitizedText = deid.Data.GetText()
+						}
+					}
+				}
+			}
+		}
+
+		if !result.Passed && result.BlockedReason == "" {
+			result.BlockedReason = "Content safety policy violation detected by Model Armor"
+		}
+	}
+
+	// Always guarantee complete deterministic PII redaction across all content
+	if result.SanitizedText == "" {
+		result.SanitizedText = RedactPII(text)
+	} else {
+		result.SanitizedText = RedactPII(result.SanitizedText)
+	}
+	if result.SanitizedText != text {
+		result.PIIFound = true
 	}
 
 	span.SetAttributes(
 		attribute.Bool("model_armor.passed", result.Passed),
 		attribute.Bool("model_armor.match_found", result.MatchFound),
 		attribute.Bool("model_armor.jailbreak_detected", result.JailbreakDetected),
+		attribute.Bool("model_armor.pii_found", result.PIIFound),
 		attribute.String("model_armor.confidence", result.Confidence),
 		attribute.String("model_armor.blocked_reason", result.BlockedReason),
-		attribute.String("gcp.agent.tool_response", fmt.Sprintf(`{"passed": %t, "match_found": %t, "jailbreak_detected": %t, "blocked_reason": %q}`, result.Passed, result.MatchFound, result.JailbreakDetected, result.BlockedReason)),
+		attribute.String("gcp.agent.tool_response", fmt.Sprintf(`{"passed": %t, "match_found": %t, "jailbreak_detected": %t, "pii_found": %t, "blocked_reason": %q}`, result.Passed, result.MatchFound, result.JailbreakDetected, result.PIIFound, result.BlockedReason)),
 	)
 
 	return result, nil
@@ -176,6 +227,7 @@ func (m *MockModelArmorService) ScreenPrompt(ctx context.Context, text string) (
 			JailbreakDetected: true,
 			Confidence:        "HIGH",
 			BlockedReason:     "Prompt injection or jailbreak attempt detected by Model Armor",
+			SanitizedText:     RedactPII(text),
 		}
 		span.SetAttributes(
 			attribute.Bool("model_armor.passed", false),
@@ -187,14 +239,25 @@ func (m *MockModelArmorService) ScreenPrompt(ctx context.Context, text string) (
 		return res, nil
 	}
 
+	sanitized := RedactPII(text)
+	piiDetected := sanitized != text
+	var infoTypes []string
+	if piiDetected {
+		infoTypes = []string{"EMAIL_ADDRESS", "PHONE_NUMBER", "STREET_ADDRESS"}
+	}
+
 	span.SetAttributes(
 		attribute.Bool("model_armor.passed", true),
 		attribute.Bool("model_armor.match_found", false),
-		attribute.String("gcp.agent.tool_response", `{"passed": true, "match_found": false}`),
+		attribute.Bool("model_armor.pii_found", piiDetected),
+		attribute.String("gcp.agent.tool_response", fmt.Sprintf(`{"passed": true, "pii_found": %t}`, piiDetected)),
 	)
 	return &SanitizeResult{
-		Passed:     true,
-		MatchFound: false,
+		Passed:        true,
+		MatchFound:    false,
+		PIIFound:      piiDetected,
+		InfoTypes:     infoTypes,
+		SanitizedText: sanitized,
 	}, nil
 }
 

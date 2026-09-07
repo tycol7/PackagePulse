@@ -4,7 +4,7 @@ output "app_url" {
 }
 
 output "gcs_bucket" {
-  description = "The Google Cloud Storage bucket created for raw email payloads"
+  description = "The Google Cloud Storage bucket created for PII-redacted email payloads"
   value       = google_storage_bucket.raw_emails.name
 }
 

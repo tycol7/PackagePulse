@@ -47,20 +47,23 @@ graph TD
             DigestHandler["GET /api/digest/generate"]
 
             subgraph AgentCore ["Agentic AI Engine"]
-                Classifier["1. Gemini Email Classifier"]
-                Extractor["2. Gemini Structured Extractor"]
-                Reconciler["3. State Reconciler"]
-                DigestAgent["4. GenAI Digest Composer"]
+                SecurityGate["1. Model Armor Security & SDP Gate"]
+                PIIRedactor["2. PII Redactor & Sanitizer"]
+                Classifier["3. Gemini Email Classifier"]
+                Extractor["4. Gemini Structured Extractor"]
+                Reconciler["5. State Reconciler"]
+                DigestAgent["6. GenAI Digest Composer"]
             end
         end
 
         subgraph StorageLayer ["Data Layer"]
-            GCS[("GCS Bucket: ${project_id}-raw-emails")]
+            GCS[("GCS Bucket: ${project_id}-redacted-emails")]
             Firestore[("Cloud Firestore: Native Mode")]
             Secrets["Google Secret Manager (OAuth Secret)"]
         end
 
         subgraph AILayer ["Agent Platform"]
+            ModelArmor["Google Cloud Model Armor (Jailbreak + SDP)"]
             Gemini["Agent Platform: Gemini 2.5 Flash"]
         end
     end
@@ -69,8 +72,11 @@ graph TD
     GoogleAccounts -->|"Validated ID Token"| AuthModule
     AuthModule --> Secrets
     UploadBox -->|"Upload .eml / .txt"| UploadHandler
-    UploadHandler -->|"Archive raw bytes"| GCS
-    UploadHandler -->|"Classify & Extract"| Gemini
+    UploadHandler -->|"1. Security & SDP Screen"| ModelArmor
+    ModelArmor -->|"If Malicious: Reject (Zero GCS Storage)"| Browser
+    ModelArmor -->|"If Clean: Redact PII"| PIIRedactor
+    PIIRedactor -->|"Archive PII-redacted payload"| GCS
+    PIIRedactor -->|"Classify & Extract"| Gemini
     Gemini --> Reconciler
     Reconciler -->|"Upsert package document"| Firestore
     Reconciler -->|"HTMX partial swap"| Browser
@@ -78,6 +84,15 @@ graph TD
     DigestHandler -->|"Compose briefing"| Gemini
     DigestHandler --> Browser
 ```
+
+---
+
+## 🛡️ Security, PII Redaction & Privacy Architecture
+
+PackagePulse enforces defense-in-depth security before any data is processed or persisted:
+1. **Model Armor Gatekeeper Before Storage**: Inbound emails are screened for prompt injection, jailbreak attempts, and malicious URIs before any persistence occurs. If an email is flagged as malicious, it is rejected immediately and **never stored in Google Cloud Storage**.
+2. **Sensitive Data Protection (SDP) & PII Redaction Before GCS**: For clean emails, all sensitive personal data (recipient names, email addresses, phone numbers, delivery street addresses, credit card numbers, and auth tokens) is redacted using Google Cloud Model Armor's Sensitive Data Protection (SDP) and deterministic redaction before the payload is archived in Cloud Storage.
+3. **Zero-PII Telemetry & Logging**: All structured JSON logs, Cloud Logging events, and OpenTelemetry trace spans are automatically sanitized to ensure no customer PII leaks into operational telemetry.
 
 ---
 
@@ -160,11 +175,11 @@ Test files are provided in `static/samples/` for immediate demo evaluation:
 
 | File | Scenario | Expected Agent Behavior |
 | :--- | :--- | :--- |
-| `fedex_in_transit.eml` | Real FedEx shipping notification | Classified as shipping email. Extracts tracking number `773918274619`, carrier `FedEx`, status `In Transit`. Creates new package card in dashboard. |
+| `fedex_in_transit.eml` | Real FedEx shipping notification | Screened clean by Model Armor. PII redacted before GCS storage. Classified as shipping email. Extracts tracking number `773918274619`, carrier `FedEx`, status `In Transit`. Creates new package card in dashboard. |
 | `fedex_out_for_delivery.txt` | Follow-up status alert (same tracking #) | Matches existing package in Firestore. Overwrites and advances status to `Out for Delivery` in place. |
 | `marketing_newsletter.eml` | Weekly promotional newsletter | Gating agent classifies as non-shipping email (`is_package_email=false`). Safely discarded with explanatory notification toast. |
 | `delivery_tomorrow.eml` | Delivery tomorrow notification with Sent Date header | Deduces that the package arrives tomorrow relative to the email sent date (e.g. Sent `2026-09-06` $\rightarrow$ Delivery `2026-09-07`), updating package delivery date. |
-| `prompt_injection_attack.eml` | Malicious prompt injection & jailbreak | Screened by Google Cloud Model Armor perimeter filter before reaching LLM. Prompt is blocked with security alert toast and audit log. |
+| `prompt_injection_attack.eml` | Malicious prompt injection & jailbreak | Screened by Model Armor BEFORE any persistence. Prompt injection blocked with security alert toast and audit log. **Zero bytes written to GCS.** |
 
 ---
 

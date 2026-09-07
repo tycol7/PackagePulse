@@ -92,23 +92,12 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	)
 	defer rootSpan.End()
 
-	// 2. Save raw bytes to Google Cloud Storage
-	_, gcsSpan := telemetry.StartToolSpan(ctx, "archive_raw_email")
-	gcsPath := fmt.Sprintf("inbound/%s/%d_%s", session.UserID, time.Now().Unix(), header.Filename)
-	if err := h.blobStore.WriteBytes(ctx, gcsPath, rawBytes); err != nil {
-		log.Printf("[GCS] Warning: Failed writing raw bytes to bucket: %v", err)
-	} else {
-		log.Printf("[GCS] Successfully archived raw email payload at gs://.../%s", gcsPath)
-	}
-	gcsSpan.SetAttributes(attribute.String("gcs.path", gcsPath))
-	gcsSpan.End()
-
-	// 3. Extract text content (.eml MIME or .txt)
+	// 1. Extract text content (.eml MIME or .txt)
 	ctx, mimeSpan := telemetry.StartToolSpan(ctx, "mime_parse")
 	parsed := storage.ExtractTextFromPayload(header.Filename, rawBytes)
 	mimeSpan.SetAttributes(
-		attribute.String("email.subject", parsed.Subject),
-		attribute.String("email.from", parsed.From),
+		attribute.String("email.subject", security.RedactPII(parsed.Subject)),
+		attribute.String("email.from", security.RedactPII(parsed.From)),
 	)
 	mimeSpan.End()
 
@@ -119,7 +108,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		"sender":   parsed.From,
 	})
 
-	// 3b. Model Armor Prompt Injection & Harmful Content Screening Gatekeeper
+	// 2. Security Gatekeeper: Model Armor Prompt Injection & Harmful Content Screening
+	// CRITICAL: We check for malicious emails BEFORE storing anything to GCS.
+	// If the email is malicious (prompt injection, jailbreak, exploit), it is REJECTED and NEVER stored to GCS!
 	if h.modelArmor != nil {
 		contentToScreen := fmt.Sprintf("Subject: %s\nFrom: %s\n\n%s", parsed.Subject, parsed.From, parsed.Body)
 		armorResult, err := h.modelArmor.ScreenPrompt(ctx, contentToScreen)
@@ -139,11 +130,12 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 				"confidence":         armorResult.Confidence,
 				"subject":            parsed.Subject,
 				"sender":             parsed.From,
+				"gcs_stored":         false,
 			})
 
 			w.Header().Set("HX-Trigger", fmt.Sprintf(`{"showToast": "Security Alert: %s"}`, reason))
 
-			// Return current package list and status pill counts unchanged
+			// Return current package list and status pill counts unchanged WITHOUT storing to GCS
 			packages, _ := h.store.ListPackages(ctx, session.UserID, "")
 			_ = h.tmpl.ExecuteTemplate(w, "package_list", map[string]interface{}{
 				"Packages": packages,
@@ -153,12 +145,37 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 3. PII Redaction & Secure GCS Archiving
+	// Only clean emails that PASSED security screening are archived, AND all sensitive PII is redacted BEFORE writing to GCS!
+	_, gcsSpan := telemetry.StartToolSpan(ctx, "archive_redacted_email")
+	redactedBytes := security.RedactEmailPayload(header.Filename, rawBytes)
+	gcsPath := fmt.Sprintf("inbound/%s/%d_redacted_%s", session.UserID, time.Now().Unix(), header.Filename)
+	if err := h.blobStore.WriteBytes(ctx, gcsPath, redactedBytes); err != nil {
+		log.Printf("[GCS] Warning: Failed writing redacted bytes to bucket: %v", err)
+	} else {
+		log.Printf("[GCS] Successfully archived PII-redacted email payload at gs://.../%s", gcsPath)
+	}
+	gcsSpan.SetAttributes(
+		attribute.String("gcs.path", gcsPath),
+		attribute.Bool("gcs.pii_redacted", true),
+		attribute.Bool("gcs.security_screened", true),
+		attribute.Int("gcs.bytes", len(redactedBytes)),
+	)
+	gcsSpan.End()
+
+	telemetry.LogStep(ctx, projectID, "StorageGate", "archive_redacted_email", "ARCHIVED", map[string]interface{}{
+		"gcs_path":          gcsPath,
+		"pii_redacted":      true,
+		"security_screened": true,
+		"bytes":             len(redactedBytes),
+	})
+
 	// 4. Step: Classifier Gatekeeper (Is Delivery Email vs. Non-Delivery Email)
 	ctx, classifierSpan := telemetry.StartToolSpan(ctx, "classify_delivery_email",
 		trace.WithAttributes(
-			attribute.String("email.subject", parsed.Subject),
-			attribute.String("email.sender", parsed.From),
-			attribute.String("gcp.agent.tool_call_args", fmt.Sprintf(`{"subject": %q, "from": %q}`, parsed.Subject, parsed.From)),
+			attribute.String("email.subject", security.RedactPII(parsed.Subject)),
+			attribute.String("email.sender", security.RedactPII(parsed.From)),
+			attribute.String("gcp.agent.tool_call_args", fmt.Sprintf(`{"subject": %q, "from": %q}`, security.RedactPII(parsed.Subject), security.RedactPII(parsed.From))),
 		),
 	)
 	result, err := h.agent.ProcessEmail(ctx, parsed)
@@ -235,10 +252,10 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 				attribute.Int("shipment.index", i+1),
 				attribute.String("shipment.carrier", pkgFields.Carrier),
 				attribute.String("shipment.tracking_number", pkgFields.TrackingNumber),
-				attribute.String("shipment.sender", pkgFields.Sender),
+				attribute.String("shipment.sender", security.RedactPII(pkgFields.Sender)),
 				attribute.String("shipment.status", pkgFields.Status),
 				attribute.String("shipment.expected_delivery", pkgFields.ExpectedDeliveryDate),
-				attribute.String("gcp.agent.tool_call_args", fmt.Sprintf(`{"carrier": %q, "tracking_number": %q, "sender": %q, "status": %q}`, pkgFields.Carrier, pkgFields.TrackingNumber, pkgFields.Sender, pkgFields.Status)),
+				attribute.String("gcp.agent.tool_call_args", fmt.Sprintf(`{"carrier": %q, "tracking_number": %q, "sender": %q, "status": %q}`, pkgFields.Carrier, pkgFields.TrackingNumber, security.RedactPII(pkgFields.Sender), pkgFields.Status)),
 			),
 		)
 
@@ -282,7 +299,7 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	totalProcessed := createdCount + updatedCount
 	if totalProcessed == 1 {
 		if createdCount == 1 {
-			actionMsg = fmt.Sprintf("New package from %s created!", createdSenders[0])
+			actionMsg = fmt.Sprintf("New package from %s created!", security.RedactPII(createdSenders[0]))
 		} else {
 			actionMsg = "Package status updated!"
 		}
@@ -291,9 +308,9 @@ func (h *UploadHandler) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	} else {
 		actionMsg = "Email processed, but no packages were recorded."
 	}
-	log.Printf("[Agent] %s", actionMsg)
+	log.Printf("[Agent] %s", security.RedactPII(actionMsg))
 
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"showToast": "%s"}`, actionMsg))
+	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"showToast": "%s"}`, security.RedactPII(actionMsg)))
 
 	// Return updated package list + updated status pill counts
 	packages, _ := h.store.ListPackages(ctx, session.UserID, "")
